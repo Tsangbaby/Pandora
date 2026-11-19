@@ -1,5 +1,7 @@
 #import "PDNative.h"
 #import "PDABI.h"
+#import "PDPresenterLease.h"
+#import "PDNativeProfile.h"
 #import <objc/message.h>
 #import <math.h>
 
@@ -77,234 +79,292 @@ static id PDScene(NSString *identifier) {
     return identifier ? PDObjectArgument(manager, @"sceneWithIdentifier:", identifier) : nil;
 }
 
-@protocol PDLayerHostConstruction <NSObject>
-- (instancetype)initWithSceneLayer:(id)layer;
-- (void)setCurrentPresentationContext:(id)context;
-@end
+
+static BOOL PDLiveFlag(id object, const char *name) {
+    BOOL value = YES;
+    return PDLeaseFlag(object,name,&value) && !value;
+}
+static BOOL PDNativeFrame(CGRect frame) {
+    return isfinite(frame.origin.x) && isfinite(frame.origin.y) && isfinite(frame.size.width) && isfinite(frame.size.height) &&
+        fabs(frame.origin.x)<0.5 && fabs(frame.origin.y)<0.5 && frame.size.width>=160 && frame.size.height>=160 &&
+        frame.size.width<=8192 && frame.size.height<=8192;
+}
+static NSDictionary *PDNativeSnapshot(NSError **error) {
+    if (!PDProbeCanPresent()) { PDError(error,@"请先在竖屏打开前台备忘录；没有创建或激活场景。"); return nil; }
+    NSString *identifier = PDSceneIdentifier(); id scene = PDScene(identifier);
+    if (![scene isKindOfClass:NSClassFromString(@"FBScene")] || !PDTrue(scene,NSSelectorFromString(@"isValid")) ||
+        !PDTrue(scene,NSSelectorFromString(@"isActive"))) { PDError(error,@"未取得唯一有效的前台 Notes Scene。"); return nil; }
+    id manager = PDReadCachedPresentationManager(scene);
+    if (![manager isKindOfClass:NSClassFromString(@"UIScenePresentationManager")] ||
+        !PDLiveFlag(manager,"_invalidated") || PDLeaseObject(manager,"_scene","@\"FBScene\"") != scene) {
+        PDError(error,@"未读到受支持的既有原生管理器；不会另建管理器。"); return nil;
+    }
+    id owner = PDLeaseObject(manager,"_scenePresenterOwner","@\"_UIScenePresenterOwner\"");
+    if (![owner isKindOfClass:NSClassFromString(@"_UIScenePresenterOwner")] || !PDLiveFlag(owner,"_invalidated") ||
+        PDLeaseObject(owner,"_scenePresentationManager","@\"UIScenePresentationManager\"") != manager ||
+        PDLeaseObject(owner,"_context","@") != scene) { PDError(error,@"原生所有者关系不受支持。"); return nil; }
+    NSArray *active = PDLeaseMembers(PDLeaseObject(owner,"_activePresentersByPriority","@\"NSMutableOrderedSet\""));
+    NSArray *inactive = PDLeaseMembers(PDLeaseObject(owner,"_inactivePresentersByPriority","@\"NSMutableSet\""));
+    id native = PDLeaseObject(owner,"_prioritizedPresenter","@\"_UIScenePresenter\"");
+    if (active.count!=1 || active.firstObject!=native || !inactive || inactive.count || !native || !PDLiveFlag(native,"_invalidated")) {
+        PDError(error,@"此候选只接受一个稳定原生呈现者，没有接管。"); return nil;
+    }
+    UIView *nativeView = PDLeaseObject(native,"_view","@\"_UIScenePresentationView\"");
+    if (![nativeView isKindOfClass:UIView.class]) { PDError(error,@"原生呈现视图尚未准备好，没有加载视图。"); return nil; }
+    UIWindow *window = nativeView.window;
+    UIViewController *parent = window.rootViewController;
+    UIView *root = parent.viewIfLoaded;
+    if (![window isKindOfClass:NSClassFromString(@"SBMainSwitcherWindow")] || window.hidden || window.alpha<0.99 ||
+        window.screen!=UIScreen.mainScreen || !root || root.window!=window || root.hidden || root.alpha<0.99 ||
+        ![nativeView isDescendantOfView:root] || !CGAffineTransformIsIdentity(root.transform) ||
+        !PDTrue(window,NSSelectorFromString(@"_usesWindowServerHitTesting")) ||
+        !PDTrue(window,NSSelectorFromString(@"_isWindowServerHostingManaged"))) {
+        PDError(error,@"既有原生窗口、根视图或事件通路不符合候选前提，没有创建窗口。"); return nil;
+    }
+    id settings = PDObject(scene,@"settings"); SEL getFrame = NSSelectorFromString(@"frame");
+    if (!PDMatches(settings,getFrame,@encode(CGRect),@[])) { PDError(error,@"Scene 几何 ABI 不匹配。"); return nil; }
+    CGRect frame = ((CGRect (*)(id,SEL))objc_msgSend)(settings,getFrame);
+    if (!PDNativeFrame(frame) || !PDNativeFrame(root.bounds) ||
+        fabs(root.bounds.size.width-frame.size.width)>0.5 || fabs(root.bounds.size.height-frame.size.height)>0.5) {
+        PDError(error,@"此候选仅支持竖屏全尺寸、同一坐标平面。"); return nil;
+    }
+    UIView *container = PDLeaseObject(owner,"_realSceneHostViewsContainer","@\"_UISceneLayerHostContainerView\"");
+    if (![container isKindOfClass:UIView.class] || !PDLiveFlag(container,"_invalidated") ||
+        PDLeaseObject(container,"_scene","@\"FBScene\"")!=scene ||
+        PDLeaseObject(nativeView,"_hostContainerView","@\"_UISceneLayerHostContainerView\"")!=container) {
+        PDError(error,@"原生完整层容器关系不一致，未接管。"); return nil;
+    }
+    if (!PDProbeCanPresent() || PDScene(identifier)!=scene || PDReadCachedPresentationManager(scene)!=manager)
+        { PDError(error,@"准备期间前台或场景改变，已取消。"); return nil; }
+    return @{@"scene":scene,@"identifier":identifier,@"manager":manager,@"owner":owner,@"native":native,
+        @"nativeView":nativeView,@"window":window,@"parent":parent,@"root":root,@"container":container,@"frame":[NSValue valueWithCGRect:frame]};
+}
 
 @interface PDSceneSession ()
 @property (nonatomic, strong, readwrite) UIView *hostedView;
 @property (nonatomic, readwrite) CGSize sourceSize;
-@property (nonatomic, strong) id scene;
-@property (nonatomic, strong) id context;
-@property (nonatomic, copy) NSString *sceneIdentifier;
+@property (nonatomic, strong) NSDictionary *snapshot;
+@property (nonatomic, strong) PDPresenterLease *lease;
+@property (nonatomic, weak) UIView *carrier;
+@property (nonatomic) CGRect baseFrame;
+@property (nonatomic) BOOL activated;
+@property (nonatomic) BOOL frameConfigured;
 @end
 
 @implementation PDSceneSession
-+ (instancetype)captureWithError:(NSError **)error {
-    if (!NSThread.isMainThread) { PDError(error, @"必须在主线程操作。"); return nil; }
-    PDSceneSession *session = [self new];
++ (BOOL)cancelPendingWithError:(NSError **)error {
+    return [PDPresenterLease cancelOutstandingWithError:error];
+}
++ (instancetype)captureInView:(UIView *)carrier onOwnershipChange:(dispatch_block_t)changed error:(NSError **)error {
+    if (!NSThread.isMainThread) { PDError(error,@"必须在主线程操作。"); return nil; }
+    NSDictionary *snapshot = PDNativeSnapshot(error);
+    if (!snapshot) return nil;
+    if (carrier.window!=snapshot[@"window"] || ![carrier isDescendantOfView:snapshot[@"root"]] ||
+        !CGAffineTransformIsIdentity(carrier.transform)) {
+        PDError(error,@"卡片不在已验证的同一原生坐标层级中，没有创建呈现者。"); return nil;
+    }
+    PDSceneSession *session = [self new]; session.snapshot = snapshot; session.carrier = carrier;
+    session.sourceSize = [snapshot[@"frame"] CGRectValue].size;
     @try {
-        if (!PDProbeCanPresent()) {
-            PDError(error, @"此探针仅支持当前前台的备忘录。请先打开一篇非敏感测试笔记。"); return nil;
-        }
-        NSString *identifier = PDSceneIdentifier();
-        id scene = PDScene(identifier);
-        Class sceneClass = NSClassFromString(@"FBScene");
-        if (!sceneClass || ![scene isKindOfClass:sceneClass] ||
-            !PDTrue(scene, NSSelectorFromString(@"isValid")) ||
-            !PDTrue(scene, NSSelectorFromString(@"isActive"))) {
-            PDError(error, @"未取得有效的前台 FBScene；没有启动或新建场景。"); return nil;
-        }
-        id settings = PDObject(scene, @"settings");
-        SEL frameSelector = NSSelectorFromString(@"frame");
-        if (!PDMatches(settings, frameSelector, @encode(CGRect), @[])) {
-            PDError(error, @"Scene frame 的 ABI 不匹配，已拒绝调用。"); return nil;
-        }
-        CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(settings, frameSelector);
-        if (!isfinite(frame.origin.x) || !isfinite(frame.origin.y) ||
-            !isfinite(frame.size.width) || !isfinite(frame.size.height) ||
-            fabs(frame.origin.x) > 0.5 || fabs(frame.origin.y) > 0.5 ||
-            frame.size.width < 160 || frame.size.height < 160 ||
-            frame.size.width > 8192 || frame.size.height > 8192) {
-            PDError(error, @"仅支持原生全屏、有效尺寸的前台场景。"); return nil;
-        }
-        id layersObject = PDObject(PDObject(scene, @"layerManager"), @"layers");
-        NSArray *layers = nil;
-        if ([layersObject isKindOfClass:NSArray.class]) layers = layersObject;
-        else if ([layersObject isKindOfClass:NSOrderedSet.class]) layers = [layersObject array];
-        else if ([layersObject isKindOfClass:NSSet.class]) layers = [layersObject allObjects];
-        if (!layers.count || layers.count > 16) {
-            PDError(error, @"场景层列表不受支持，未创建宿主。"); return nil;
-        }
-        id contentLayer = nil;
-        Class layerClass = NSClassFromString(@"FBSceneLayer");
-        for (id layer in layers) {
-            SEL keyboard = NSSelectorFromString(@"isKeyboardLayer");
-            SEL proxy = NSSelectorFromString(@"isKeyboardProxyLayer");
-            SEL contextID = NSSelectorFromString(@"contextID");
-            if (!layerClass || ![layer isKindOfClass:layerClass] ||
-                !PDMatches(layer, keyboard, @encode(BOOL), @[]) ||
-                !PDMatches(layer, proxy, @encode(BOOL), @[]) ||
-                !PDMatches(layer, contextID, "I", @[])) {
-                PDError(error, @"场景层类型或 ABI 不匹配。"); return nil;
-            }
-            if (((BOOL (*)(id, SEL))objc_msgSend)(layer, keyboard) ||
-                ((BOOL (*)(id, SEL))objc_msgSend)(layer, proxy)) continue;
-            if (!((unsigned int (*)(id, SEL))objc_msgSend)(layer, contextID)) continue;
-            if (contentLayer) {
-                PDError(error, @"检测到多个内容层；此最小探针不猜测层序，请关闭弹窗后重试。"); return nil;
-            }
-            contentLayer = layer;
-        }
-        Class hostClass = NSClassFromString(@"_UIContextLayerHostView");
-        Class contextClass = NSClassFromString(@"UIScenePresentationContext");
-        if (!contentLayer || ![hostClass isSubclassOfClass:UIView.class] || !contextClass) {
-            PDError(error, @"场景宿主类型不可用。"); return nil;
-        }
-        id<PDLayerHostConstruction> allocated = [hostClass alloc];
-        if (!PDMatches(allocated, @selector(initWithSceneLayer:), "@", @[@"@"]) ||
-            !PDMatches(allocated, @selector(setCurrentPresentationContext:), "v", @[@"@"])) {
-            PDError(error, @"场景宿主接口不可用；没有退回截图。"); return nil;
-        }
-        session.scene = scene;
-        session.sceneIdentifier = identifier;
-        session.sourceSize = frame.size;
-        session.context = [contextClass new];
-        if (!session.context) { PDError(error, @"呈现上下文创建失败。"); return nil; }
-        id<PDLayerHostConstruction> host = [allocated initWithSceneLayer:contentLayer];
-        if (![host isKindOfClass:UIView.class]) { PDError(error, @"宿主创建失败。"); return nil; }
-        session.hostedView = (UIView *)host;
-        [host setCurrentPresentationContext:session.context];
-        session.hostedView.userInteractionEnabled = YES;
-        if (!session.remainsForeground) {
-            [session invalidate]; PDError(error, @"准备期间前台场景已改变，已取消。"); return nil;
+        session.lease = [PDPresenterLease stageWithManager:snapshot[@"manager"] owner:snapshot[@"owner"]
+            nativePresenter:snapshot[@"native"] onChange:changed error:error];
+        if (!session.lease) return nil;
+        BOOL prepared = [session.lease performOperation:^BOOL{
+            id p = session.lease.presenter;
+            UIView *view = PDObject(p,@"presentationView"); // Inactive own view, native defaults.
+            if (![view isKindOfClass:NSClassFromString(@"_UIScenePresentationView")] || view.superview ||
+                !CGAffineTransformIsIdentity(view.transform) || !PDNativeFrame(view.frame) ||
+                fabs(view.bounds.size.width-session.sourceSize.width)>0.5 || fabs(view.bounds.size.height-session.sourceSize.height)>0.5) return NO;
+            session.hostedView = view; session.baseFrame = view.frame;
+            [carrier addSubview:view];
+            return view.window==snapshot[@"window"] && PDProbeCanPresent();
+        } error:error];
+        if (!prepared) {
+            [session finishWithError:nil]; PDError(error,@"原生视图准备失败或已取消，已尝试只撤销实验对象。"); return nil;
         }
         return session;
     } @catch (__unused NSException *exception) {
-        [session invalidate]; PDError(error, @"私有接口抛出异常；已撤销本探针持有的视图。"); return nil;
+        [session finishWithError:nil]; PDError(error,@"原生准备异常，已尝试只撤销实验对象。"); return nil;
     }
 }
-
+- (BOOL)matchesCurrentEnvironment {
+    NSDictionary *s = self.snapshot;
+    UIWindow *window = s[@"window"]; UIViewController *parent = s[@"parent"]; UIView *root = s[@"root"];
+    return s && !self.lease.ended && PDProbeCanPresent() &&
+        PDScene(s[@"identifier"])==s[@"scene"] && PDReadCachedPresentationManager(s[@"scene"])==s[@"manager"] &&
+        PDLeaseObject(s[@"manager"],"_scenePresenterOwner","@\"_UIScenePresenterOwner\"")==s[@"owner"] &&
+        window.rootViewController==parent && parent.viewIfLoaded==root && root.window==window &&
+        !window.hidden && !root.hidden && self.carrier.window==window && self.hostedView.window==window &&
+        [self.carrier isDescendantOfView:root] && PDTrue(s[@"scene"],NSSelectorFromString(@"isValid")) &&
+        PDTrue(s[@"scene"],NSSelectorFromString(@"isActive"));
+}
+- (BOOL)updateFrame:(CGRect)frame error:(NSError **)error {
+    if (!NSThread.isMainThread || ![self matchesCurrentEnvironment] ||
+        (self.activated && !self.lease.readyForInput)) return PDError(error,@"原生呈现关系变化，拒绝布局或输入。");
+    PDHostMapping mapping;
+    CGRect base = self.baseFrame;
+    if (!PDMakeHostMapping(base.origin.x,base.origin.y,base.size.width,base.size.height,
+        frame.origin.x,frame.origin.y,frame.size.width,frame.size.height,&mapping) ||
+        !CGRectContainsRect(self.carrier.bounds,frame)) return PDError(error,@"目标卡片几何无效，拒绝变换。");
+    CGFloat sx = mapping.a;
+    CGAffineTransform transform = CGAffineTransformMake(mapping.a,mapping.b,mapping.c,mapping.d,mapping.tx,mapping.ty);
+    Class transformClass = NSClassFromString(@"UITransform");
+    SEL factory = NSSelectorFromString(@"transformWithCGAffineTransform:");
+    if (!PDMatches(transformClass,factory,"@",@[[NSString stringWithUTF8String:@encode(CGAffineTransform)]]))
+        return PDError(error,@"原生变换工厂 ABI 不匹配。");
+    @try {
+        return [self.lease performOperation:^BOOL{
+        id value = ((id (*)(id,SEL,CGAffineTransform))objc_msgSend)(transformClass,factory,transform);
+        if (!value) return PDError(error,@"原生变换对象为空。");
+        __block BOOL applied = NO;
+        void (^modify)(id) = ^(id context) {
+            SEL setter = NSSelectorFromString(@"setHostTransformer:");
+            if ([context isKindOfClass:NSClassFromString(@"UIMutableScenePresentationContext")] &&
+                PDMatches(context,setter,"v",@[@"@"])) {
+                ((void (*)(id,SEL,id))objc_msgSend)(context,setter,value); applied = YES;
+            }
+        };
+        SEL change = NSSelectorFromString(@"modifyPresentationContext:");
+        ((void (*)(id,SEL,id))objc_msgSend)(self.lease.presenter,change,modify);
+        if (!applied) return PDError(error,@"原生上下文未接收几何变换。");
+        self.hostedView.clipsToBounds = YES;
+        self.hostedView.layer.cornerRadius = 16/sx; // Only our presentation view.
+        CGRect actual = [self.hostedView convertRect:self.hostedView.bounds toView:self.carrier];
+        if (fabs(actual.origin.x-frame.origin.x)>0.5 || fabs(actual.origin.y-frame.origin.y)>0.5 ||
+            fabs(actual.size.width-frame.size.width)>0.5 || fabs(actual.size.height-frame.size.height)>0.5)
+            return PDError(error,@"原生坐标变换回查不匹配，未判定托管成功。");
+        self.frameConfigured = YES; return YES;
+        } error:error];
+    } @catch (__unused NSException *exception) { return PDError(error,@"原生上下文更新异常，需撤销实验。"); }
+}
+- (BOOL)activateWithError:(NSError **)error {
+    if (!self.frameConfigured || ![self matchesCurrentEnvironment]) return PDError(error,@"呈现尚未准备好，未激活。");
+    if (![self.lease activateWithError:error]) return NO;
+    self.activated = YES;
+    if (!self.remainsForeground ||
+        PDLeaseObject(self.hostedView,"_hostContainerView","@\"_UISceneLayerHostContainerView\"")!=self.snapshot[@"container"])
+        return PDError(error,@"原生完整层承载回查失败，需撤销实验。");
+    return YES;
+}
 - (BOOL)remainsForeground {
-    if (!self.scene || !PDProbeCanPresent()) return NO;
-    @try {
-        NSString *identifier = PDSceneIdentifier();
-        return [identifier isEqualToString:self.sceneIdentifier] && PDScene(identifier) == self.scene &&
-            PDTrue(self.scene, NSSelectorFromString(@"isValid")) &&
-            PDTrue(self.scene, NSSelectorFromString(@"isActive"));
-    } @catch (__unused NSException *exception) { return NO; }
+    @try { return self.activated && self.lease.readyForInput && [self matchesCurrentEnvironment]; }
+    @catch (__unused NSException *exception) { return NO; }
 }
-
 - (BOOL)requestFocusWithError:(NSError **)error {
-    if (!self.remainsForeground) return PDError(error, @"原前台场景已失效，拒绝焦点请求。");
+    if (!self.remainsForeground) return PDError(error,@"原生承载或前台已变化，拒绝焦点请求。");
     @try {
-        id focus = PDObject(PDWorkspace(), @"keyboardFocusController");
-        SEL selector = NSSelectorFromString(@"userFocusRequestForScene:reason:");
-        if (!PDMatches(focus, selector, "v", @[@"@", @"@"]))
-            return PDError(error, @"焦点接口 ABI 不匹配。");
-        ((void (*)(id, SEL, id, id))objc_msgSend)(focus, selector, self.scene,
-            @"com.tsangbaby.pandora.manual-probe");
-        return YES; // Request issued, NOT an assertion that text input succeeded.
-    } @catch (__unused NSException *exception) { return PDError(error, @"焦点请求异常，请结束实验。"); }
+        id focus = PDObject(PDWorkspace(),@"keyboardFocusController"); SEL selector=NSSelectorFromString(@"userFocusRequestForScene:reason:");
+        if (!PDMatches(focus,selector,"v",@[@"@",@"@"])) return PDError(error,@"焦点接口 ABI 不匹配。");
+        ((void (*)(id,SEL,id,id))objc_msgSend)(focus,selector,self.snapshot[@"scene"],@"com.tsangbaby.pandora.manual-native-probe");
+        return YES; // A request, never a claim that actual text reached Notes.
+    } @catch (__unused NSException *exception) { return PDError(error,@"焦点请求异常，请结束实验。"); }
 }
-
-- (void)invalidate {
-    NSAssert(NSThread.isMainThread, @"Main-thread UI cleanup required");
-    [self.hostedView removeFromSuperview];
-    self.hostedView = nil;
-    self.context = nil;
-    self.scene = nil;
-    self.sceneIdentifier = nil;
-    // Never changed native Scene settings, presenter, lifecycle or assertion tokens.
+- (BOOL)finishWithError:(NSError **)error {
+    if (!NSThread.isMainThread) return PDError(error,@"清理必须在主线程。");
+    self.activated = NO;
+    if (self.lease && ![self.lease cancelWithError:error]) return NO;
+    [self.hostedView removeFromSuperview]; self.hostedView = nil;
+    self.lease = nil; self.snapshot = nil; self.carrier = nil;
+    return YES;
 }
-@end
-
-@implementation PDSystemWindow
-+ (BOOL)_isSystemWindow { return YES; }
-- (BOOL)_isWindowServerHostingManaged { return NO; }
 @end
 
 @interface PDOverlayLease ()
-@property (nonatomic, strong) UIWindow *window;
-@property (nonatomic, strong) id hosting;
+@property (nonatomic, strong) UIViewController *controller;
+@property (nonatomic, weak) UIViewController *parent;
+@property (nonatomic, weak) UIView *nativeRoot;
+@property (nonatomic, weak) UIWindow *nativeWindow;
 @property (nonatomic, strong) id orientationObserver;
-@property (nonatomic, copy) dispatch_block_t orientationChanged;
-@property (nonatomic) unsigned int contextID;
+@property (nonatomic, copy) dispatch_block_t invalidationHandler;
 @property (nonatomic) BOOL invalidated;
+@property (nonatomic) BOOL retiring;
+@property (nonatomic) BOOL retirementRequested;
+@property (nonatomic) NSUInteger attachDepth;
 @end
+static PDOverlayLease *PDPendingOverlay;
 
 @implementation PDOverlayLease
-+ (instancetype)attachWindow:(UIWindow *)window
-         onOrientationChange:(dispatch_block_t)changed error:(NSError **)error {
-    if (!NSThread.isMainThread) { PDError(error, @"系统窗口须由主线程创建。"); return nil; }
++ (BOOL)finishPendingWithError:(NSError **)error {
+    if (!NSThread.isMainThread) return PDError(error,@"清理必须在主线程。");
+    return !PDPendingOverlay || [PDPendingOverlay finishWithError:error];
+}
++ (instancetype)attachController:(UIViewController *)controller onInvalidation:(dispatch_block_t)changed error:(NSError **)error {
+    if (!NSThread.isMainThread || controller.parentViewController || PDPendingOverlay) {
+        PDError(error,@"控制视图已有父控制器或上一清理未确认，禁止重复附加。"); return nil;
+    }
+    NSDictionary *snapshot = PDNativeSnapshot(error); if (!snapshot) return nil;
     PDOverlayLease *lease = [self new];
-    lease.window = window;
+    lease.controller = controller; lease.parent = snapshot[@"parent"];
+    lease.nativeRoot = snapshot[@"root"]; lease.nativeWindow = snapshot[@"window"]; lease.invalidationHandler = changed;
+    PDPendingOverlay = lease; // Exists before the first observer/containment side effect.
+    lease.attachDepth++;
     @try {
         lease.orientationObserver = [NSClassFromString(@"FBSOrientationObserver") new];
-        SEL orientation = NSSelectorFromString(@"activeInterfaceOrientation");
-        SEL handler = NSSelectorFromString(@"setHandler:");
-        // This probe is portrait-only. Any rotation closes it, rather than guessing geometry.
-        if (!PDMatches(lease.orientationObserver, orientation, @encode(NSInteger), @[]) ||
-            !PDMatches(lease.orientationObserver, handler, "v", @[@"@?"]) ||
-            !PDMatches(lease.orientationObserver, NSSelectorFromString(@"invalidate"), "v", @[]) ||
-            ((NSInteger (*)(id, SEL))objc_msgSend)(lease.orientationObserver, orientation) != 1) {
-            [lease invalidate]; PDError(error, @"本轮探针仅验证竖屏；旋转会安全退出。"); return nil;
+        SEL orientation = NSSelectorFromString(@"activeInterfaceOrientation"), handler = NSSelectorFromString(@"setHandler:");
+        if (!PDMatches(lease.orientationObserver,orientation,@encode(NSInteger),@[]) ||
+            !PDMatches(lease.orientationObserver,handler,"v",@[@"@?"]) ||
+            !PDMatches(lease.orientationObserver,NSSelectorFromString(@"invalidate"),"v",@[]) ||
+            ((NSInteger (*)(id,SEL))objc_msgSend)(lease.orientationObserver,orientation)!=1) {
+            [lease finishWithError:nil]; PDError(error,@"此候选仅支持竖屏；不会修改系统方向。"); return nil;
         }
-        lease.orientationChanged = changed;
         __weak PDOverlayLease *weakLease = lease;
         void (^orientationCallback)(id) = ^(__unused id update) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 PDOverlayLease *live = weakLease;
                 if (!live || live.invalidated) return;
-                NSInteger value = ((NSInteger (*)(id, SEL))objc_msgSend)(live.orientationObserver, orientation);
-                if (value != 1 && live.orientationChanged) live.orientationChanged();
+                NSInteger value = ((NSInteger (*)(id,SEL))objc_msgSend)(live.orientationObserver,orientation);
+                if (value!=1 && live.invalidationHandler) live.invalidationHandler();
             });
         };
-        ((void (*)(id, SEL, id))objc_msgSend)(lease.orientationObserver, handler, orientationCallback);
-        lease.hosting = [NSClassFromString(@"SBSAccessibilityWindowHostingController") new];
-        SEL registerWindow = NSSelectorFromString(@"registerWindowWithContextID:atLevel:");
-        SEL unregisterWindow = NSSelectorFromString(@"unregisterWindowWithContextID:");
-        SEL context = NSSelectorFromString(@"_contextId");
-        if (!PDMatches(lease.hosting, registerWindow, "v", @[@"I", @"d"]) ||
-            !PDMatches(lease.hosting, unregisterWindow, "v", @[@"I"]) ||
-            !PDMatches(lease.hosting, NSSelectorFromString(@"invalidate"), "v", @[]) ||
-            !PDMatches(window, context, "I", @[])) {
-            [lease invalidate]; PDError(error, @"系统窗口注册接口不匹配。"); return nil;
-        }
-        window.windowLevel = UIWindowLevelStatusBar + 1;
-        window.hidden = NO; // Deliberately never makeKeyWindow: retain native keyboard ownership.
-        [window layoutIfNeeded];
-        lease.contextID = ((unsigned int (*)(id, SEL))objc_msgSend)(window, context);
-        if (!lease.contextID) { [lease invalidate]; PDError(error, @"系统窗口 contextID 为零。"); return nil; }
-        ((void (*)(id, SEL, unsigned int, double))objc_msgSend)(lease.hosting, registerWindow,
-            lease.contextID, (double)window.windowLevel);
+        ((void (*)(id,SEL,id))objc_msgSend)(lease.orientationObserver,handler,orientationCallback);
+        [lease.parent addChildViewController:controller];
+        controller.view.frame = lease.nativeRoot.bounds;
+        controller.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [lease.nativeRoot addSubview:controller.view];
+        [controller didMoveToParentViewController:lease.parent];
+        if (!lease.valid || lease.retirementRequested) { [lease finishWithError:nil]; PDError(error,@"根视图准备期间变化或已取消，没有接管场景。"); return nil; }
         return lease;
     } @catch (__unused NSException *exception) {
-        [lease invalidate]; PDError(error, @"系统窗口创建异常，已执行清理。"); return nil;
+        [lease finishWithError:nil]; PDError(error,@"控制层准备异常，已尝试移除自己的视图。"); return nil;
+    } @finally {
+        lease.attachDepth--;
+        if (lease.retirementRequested) [lease finishWithError:nil];
     }
 }
-
-- (void)invalidate {
-    NSAssert(NSThread.isMainThread, @"Main-thread window cleanup required");
-    if (self.invalidated) return;
-    self.invalidated = YES;
-    self.window.hidden = YES;
-    self.window.rootViewController = nil;
-    SEL unregisterWindow = NSSelectorFromString(@"unregisterWindowWithContextID:");
+- (BOOL)valid {
+    return NSThread.isMainThread && !self.invalidated && !self.retiring && !self.retirementRequested && self.controller && self.parent && self.nativeRoot && self.nativeWindow &&
+        PDProbeCanPresent() && !self.nativeWindow.hidden && self.nativeWindow.rootViewController==self.parent &&
+        self.parent.viewIfLoaded==self.nativeRoot && self.nativeRoot.window==self.nativeWindow &&
+        self.controller.parentViewController==self.parent && self.controller.viewIfLoaded.superview==self.nativeRoot &&
+        self.controller.viewIfLoaded.window==self.nativeWindow && CGAffineTransformIsIdentity(self.nativeRoot.transform);
+}
+- (BOOL)finishWithError:(NSError **)error {
+    if (!NSThread.isMainThread) return PDError(error,@"清理必须在主线程。");
+    if (self.invalidated) return YES;
+    self.retirementRequested = YES;
+    if (self.attachDepth || self.retiring) return PDError(error,@"控制层调用未退出或正在清理，票据已保留。");
+    if (![PDPresenterLease cancelOutstandingWithError:error]) return NO;
+    self.retiring = YES; self.invalidationHandler = nil;
+    BOOL success = YES;
+    @try { if (self.controller.parentViewController) [self.controller willMoveToParentViewController:nil]; }
+    @catch (__unused NSException *e) { success = NO; }
+    @try { [self.controller.viewIfLoaded removeFromSuperview]; }
+    @catch (__unused NSException *e) { success = NO; }
+    @try { if (self.controller.parentViewController) [self.controller removeFromParentViewController]; }
+    @catch (__unused NSException *e) { success = NO; }
     @try {
-        if (self.contextID && PDMatches(self.hosting, unregisterWindow, "v", @[@"I"]))
-            ((void (*)(id, SEL, unsigned int))objc_msgSend)(self.hosting, unregisterWindow, self.contextID);
-    } @catch (__unused NSException *exception) { NSLog(@"[Pandora] window unregister exception"); }
-    @try {
-        SEL invalidate = NSSelectorFromString(@"invalidate");
-        if (PDMatches(self.hosting, invalidate, "v", @[]))
-            ((void (*)(id, SEL))objc_msgSend)(self.hosting, invalidate);
-    } @catch (__unused NSException *exception) { NSLog(@"[Pandora] window invalidation exception"); }
-    self.contextID = 0;
-    self.orientationChanged = nil;
-    @try {
-        SEL handler = NSSelectorFromString(@"setHandler:");
-        if (PDMatches(self.orientationObserver, handler, "v", @[@"@?"]))
-            ((void (*)(id, SEL, id))objc_msgSend)(self.orientationObserver, handler, nil);
-    } @catch (__unused NSException *exception) {}
-    @try {
-        SEL invalidate = NSSelectorFromString(@"invalidate");
-        if (PDMatches(self.orientationObserver, invalidate, "v", @[]))
-            ((void (*)(id, SEL))objc_msgSend)(self.orientationObserver, invalidate);
-    } @catch (__unused NSException *exception) {}
-    self.orientationObserver = nil;
-    self.hosting = nil;
-    self.window = nil;
+        if (self.orientationObserver) {
+            SEL invalidate=NSSelectorFromString(@"invalidate");
+            if (!PDMatches(self.orientationObserver,invalidate,"v",@[])) success = NO;
+            else { ((void (*)(id,SEL))objc_msgSend)(self.orientationObserver,invalidate); self.orientationObserver = nil; }
+        }
+    } @catch (__unused NSException *e) { success = NO; }
+    if (self.controller.parentViewController || self.controller.viewIfLoaded.superview || self.orientationObserver) success = NO;
+    self.retiring = NO;
+    if (!success) return PDError(error,@"控制层清理未确认，票据仍保留且禁止重复附加；没有修改原生窗口。");
+    self.invalidated = YES; self.controller = nil;
+    self.parent = nil; self.nativeRoot = nil; self.nativeWindow = nil;
+    if (PDPendingOverlay == self) PDPendingOverlay = nil;
+    return YES; // Never hide, re-key, unregister or clear the borrowed native window.
 }
 @end

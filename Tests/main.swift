@@ -64,4 +64,39 @@ for width in stride(from: 240, through: 1000, by: 20) {
         }
     }
 }
+// Native cleanup is a barrier, not an immediate return to idle.
+var barrier = ProbeState()
+let pending = barrier.begin()!
+let retiring = barrier.beginCancellation()!
+check(barrier.phase == .cancelling, "cancellation closes mount gate")
+check(barrier.begin() == nil, "cannot mount during cleanup")
+check(!barrier.attach(pending), "late mount rejected during cleanup")
+check(barrier.beginCancellation() == nil, "recursive cleanup rejected")
+check(!barrier.finishCancellation(pending, succeeded: true), "stale cleanup cannot commit")
+check(barrier.finishCancellation(retiring, succeeded: false), "failed cleanup is recorded")
+check(barrier.phase == .blocked && barrier.begin() == nil, "failed cleanup blocks remount")
+check(!barrier.markFocus(retiring), "failed cleanup cannot request input")
+let retry = barrier.beginCancellation()!
+check(barrier.finishCancellation(retry, succeeded: true), "successful retry resolves barrier")
+check(barrier.phase == .idle, "resolved cleanup returns idle")
+let newest = barrier.begin()!
+check(!barrier.finishCancellation(retry, succeeded: true), "retired cleanup cannot cancel new session")
+check(barrier.attach(newest), "new lease remains eligible")
+barrier.stop()
+for published in [false, true] {
+    for closing in [false, true] {
+        for valid in [false, true] {
+            check(ProbeAdmission.permits(published: published, closing: closing, overlayValid: valid) ==
+                  (published && !closing && valid), "mount admission requires published valid non-retiring overlay")
+            check(ProbeAdmission.resumesClose(published: published, closing: closing, overlayValid: valid) ==
+                  (published && closing && valid), "automatic close only resumes genuine in-flight close")
+        }
+    }
+}
+for _ in 0..<100 {
+    check(!ProbeAdmission.resumesClose(published: true, closing: true, overlayValid: false),
+          "persistent overlay failure cannot enqueue another automatic cleanup")
+    check(!ProbeAdmission.permits(published: false, closing: false, overlayValid: true),
+          "partially attached unpublished root cannot enter presenter factory")
+}
 print("PANDORA_STATE_TESTS checks=\(checks) failures=0")

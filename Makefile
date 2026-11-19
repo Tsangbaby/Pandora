@@ -9,7 +9,7 @@ FINALPACKAGE = 1
 
 include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = Pandora
-Pandora_FILES = Sources/Core/ProbeState.swift Sources/UI/ProbeController.swift Sources/Native/PDNative.m Sources/Native/PDEntry.m
+Pandora_FILES = Sources/Core/ProbeState.swift Sources/UI/ProbeController.swift Sources/Native/PDNative.m Sources/Native/PDPresenterLease.m Sources/Native/PDEntry.m
 Pandora_CFLAGS = -fobjc-arc -fblocks -Wall -Wextra
 Pandora_SWIFTFLAGS = -swift-version 5 -import-objc-header $(THEOS_PROJECT_DIR)/Sources/Native/PDNative.h
 Pandora_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation

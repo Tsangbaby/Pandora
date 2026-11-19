@@ -3,7 +3,7 @@ name: Pandora RootHide probe
 on:
   push:
     branches:
-      - fix/0.1.0-probe2-scene-lookup
+      - fix/0.1.0-native-presenter-probe3
   workflow_dispatch:
 
 permissions:
@@ -31,8 +31,15 @@ jobs:
           verify_rc=$?
           python3 scripts/manifest.py --self-test >> ci-artifacts/python-tests.log 2>&1
           manifest_rc=$?
-          cat ci-artifacts/python-tests.log
-          if [ "$verify_rc" -ne 0 ] || [ "$manifest_rc" -ne 0 ]; then exit 1; fi
+          python3 Tests/test_native_source.py > ci-artifacts/native-source-candidate.log 2>&1
+          source_rc=$?
+          git fetch --no-tags --depth=1 origin a2056e719ad2fbb89163dfca68f4bcfb8172c915 > ci-artifacts/native-source-fetch.log 2>&1
+          source_fetch_rc=$?
+          python3 Tests/test_native_source.py --baseline > ci-artifacts/native-source-baseline.log 2>&1
+          baseline_rc=$?
+          cat ci-artifacts/python-tests.log ci-artifacts/native-source-candidate.log ci-artifacts/native-source-baseline.log
+          if [ "$verify_rc" -ne 0 ] || [ "$manifest_rc" -ne 0 ] || [ "$source_rc" -ne 0 ] || \
+             [ "$source_fetch_rc" -ne 0 ] || [ "$baseline_rc" -ne 0 ]; then exit 1; fi
 
       - name: Record commit-bound source manifest
         if: always() && steps.checkout.outcome == 'success'
@@ -143,6 +150,27 @@ jobs:
           rc=$?
           cat ci-artifacts/roothide-build.log
           exit "$rc"
+
+      - name: Execute actual native transaction and containment fault tests
+        run: |
+          set +e
+          python3 Tests/test_presenter_lease.py > ci-artifacts/presenter-lease-driver.log 2>&1
+          lease_rc=$?
+          cat ci-artifacts/presenter-lease-driver.log
+          python3 Tests/test_overlay_lease.py > ci-artifacts/overlay-lease-driver.log 2>&1
+          overlay_rc=$?
+          cat ci-artifacts/overlay-lease-driver.log
+          clang -std=c11 -Wall -Wextra -Werror -ISources/Native Tests/native_policy.c -lm \
+            -o "$RUNNER_TEMP/pandora-native-policy" > ci-artifacts/native-policy-build.log 2>&1
+          policy_build=$?
+          cat ci-artifacts/native-policy-build.log
+          policy_test=0
+          if [ "$policy_build" -eq 0 ]; then
+            "$RUNNER_TEMP/pandora-native-policy" > ci-artifacts/native-policy-test.log 2>&1
+            policy_test=$?
+            cat ci-artifacts/native-policy-test.log
+          fi
+          if [ "$lease_rc" -ne 0 ] || [ "$overlay_rc" -ne 0 ] || [ "$policy_build" -ne 0 ] || [ "$policy_test" -ne 0 ]; then exit 1; fi
 
       - name: Independently verify original Debian package
         run: |

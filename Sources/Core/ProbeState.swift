@@ -3,7 +3,7 @@ import CoreGraphics
 
 // Only the manual, foreground-Notes experiment. No persisted or background sessions.
 struct ProbeState {
-    enum Phase: Equatable { case idle, mounting, attached }
+    enum Phase: Equatable { case idle, mounting, attached, cancelling, blocked }
     private(set) var phase: Phase = .idle
     private(set) var generation: UInt64 = 0
     private(set) var focusRequested = false
@@ -28,10 +28,33 @@ struct ProbeState {
         return true
     }
 
-    mutating func stop() {
+    mutating func beginCancellation() -> UInt64? {
+        guard phase != .cancelling else { return nil }
         generation &+= 1
-        phase = .idle
+        phase = .cancelling
         focusRequested = false
+        return generation
+    }
+
+    mutating func finishCancellation(_ token: UInt64, succeeded: Bool) -> Bool {
+        guard phase == .cancelling, generation == token else { return false }
+        phase = succeeded ? .idle : .blocked
+        return true
+    }
+
+    // Model-only convenience for already-resolved cleanup. UI must use the
+    // explicit cancellation barrier around native cleanup, not this shortcut.
+    mutating func stop() {
+        if let token = beginCancellation() { _ = finishCancellation(token, succeeded: true) }
+    }
+}
+
+enum ProbeAdmission {
+    static func permits(published: Bool, closing: Bool, overlayValid: Bool) -> Bool {
+        return published && !closing && overlayValid
+    }
+    static func resumesClose(published: Bool, closing: Bool, overlayValid: Bool) -> Bool {
+        return published && closing && overlayValid
     }
 }
 
