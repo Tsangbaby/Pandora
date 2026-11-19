@@ -208,15 +208,17 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
         !CGRectContainsRect(self.carrier.bounds,frame)) return PDError(error,@"目标卡片几何无效，拒绝变换。");
     CGFloat sx = mapping.a;
     CGAffineTransform transform = CGAffineTransformMake(mapping.a,mapping.b,mapping.c,mapping.d,mapping.tx,mapping.ty);
-    Class transformClass = NSClassFromString(@"UITransform");
+    Class transformClass = NSClassFromString(@"UITransformer");
+    Class baseTransformClass = NSClassFromString(@"UITransform");
     SEL factory = NSSelectorFromString(@"transformWithCGAffineTransform:");
-    if (!PDMatches(transformClass,factory,"@",@[[NSString stringWithUTF8String:@encode(CGAffineTransform)]]))
-        return PDError(error,@"原生变换工厂 ABI 不匹配。");
+    if (!transformClass || ![transformClass isSubclassOfClass:baseTransformClass] ||
+        !PDMatches(transformClass,factory,"@",@[[NSString stringWithUTF8String:@encode(CGAffineTransform)]]))
+        return PDError(error,@"原生 UITransformer 工厂 ABI 不匹配。");
     @try {
         __block NSString *failure = @"原生布局操作被取消。";
         BOOL updated = [self.lease performOperation:^BOOL{
         id value = ((id (*)(id,SEL,CGAffineTransform))objc_msgSend)(transformClass,factory,transform);
-        if (!value) { failure = @"原生变换对象为空。"; return NO; }
+        if (!value || ![value isKindOfClass:transformClass]) { failure = @"原生工厂未返回 UITransformer。"; return NO; }
         __block BOOL applied = NO;
         void (^modify)(id) = ^(id context) {
             SEL setter = NSSelectorFromString(@"setHostTransformer:");
@@ -237,7 +239,11 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
         self.frameConfigured = YES; return YES;
         } error:error];
         return updated ? YES : PDError(error,failure);
-    } @catch (__unused NSException *exception) { return PDError(error,@"原生上下文更新异常，需撤销实验。"); }
+    } @catch (NSException *exception) {
+        NSString *reason = exception.reason ?: @"无详细原因";
+        if (reason.length > 160) reason = [[reason substringToIndex:160] stringByAppendingString:@"…"];
+        return PDError(error,[NSString stringWithFormat:@"原生上下文更新异常 %@：%@；已撤销实验。",exception.name ?: @"NSException",reason]);
+    }
 }
 - (BOOL)activateWithError:(NSError **)error {
     if (!self.frameConfigured || ![self matchesCurrentEnvironment]) return PDError(error,@"呈现尚未准备好，未激活。");
