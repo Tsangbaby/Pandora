@@ -213,9 +213,10 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
     if (!PDMatches(transformClass,factory,"@",@[[NSString stringWithUTF8String:@encode(CGAffineTransform)]]))
         return PDError(error,@"原生变换工厂 ABI 不匹配。");
     @try {
-        return [self.lease performOperation:^BOOL{
+        __block NSString *failure = @"原生布局操作被取消。";
+        BOOL updated = [self.lease performOperation:^BOOL{
         id value = ((id (*)(id,SEL,CGAffineTransform))objc_msgSend)(transformClass,factory,transform);
-        if (!value) return PDError(error,@"原生变换对象为空。");
+        if (!value) { failure = @"原生变换对象为空。"; return NO; }
         __block BOOL applied = NO;
         void (^modify)(id) = ^(id context) {
             SEL setter = NSSelectorFromString(@"setHostTransformer:");
@@ -226,15 +227,16 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
         };
         SEL change = NSSelectorFromString(@"modifyPresentationContext:");
         ((void (*)(id,SEL,id))objc_msgSend)(self.lease.presenter,change,modify);
-        if (!applied) return PDError(error,@"原生上下文未接收几何变换。");
+        if (!applied) { failure = @"原生上下文未接收几何变换。"; return NO; }
         self.hostedView.clipsToBounds = YES;
         self.hostedView.layer.cornerRadius = 16/sx; // Only our presentation view.
         CGRect actual = [self.hostedView convertRect:self.hostedView.bounds toView:self.carrier];
         if (fabs(actual.origin.x-frame.origin.x)>0.5 || fabs(actual.origin.y-frame.origin.y)>0.5 ||
             fabs(actual.size.width-frame.size.width)>0.5 || fabs(actual.size.height-frame.size.height)>0.5)
-            return PDError(error,@"原生坐标变换回查不匹配，未判定托管成功。");
+            { failure = @"原生坐标变换回查不匹配，未判定托管成功。"; return NO; }
         self.frameConfigured = YES; return YES;
         } error:error];
+        return updated ? YES : PDError(error,failure);
     } @catch (__unused NSException *exception) { return PDError(error,@"原生上下文更新异常，需撤销实验。"); }
 }
 - (BOOL)activateWithError:(NSError **)error {

@@ -152,6 +152,7 @@ jobs:
           exit "$rc"
 
       - name: Execute actual native transaction and containment fault tests
+        if: always() && steps.checkout.outcome == 'success'
         run: |
           set +e
           python3 Tests/test_presenter_lease.py > ci-artifacts/presenter-lease-driver.log 2>&1
