@@ -196,8 +196,15 @@ def parse_control(text):
     return result
 
 
-def is_root_hide_dependency(name):
-    return name.startswith(ROOTHIDE_REL)
+def check_root_hide_dependencies(deps, require_substrate):
+    errors = []
+    for library in ("libsubstrate.dylib", "libroothide.dylib"):
+        matching = {d for d in deps if d.rsplit("/", 1)[-1].lower() == library}
+        expected = ROOTHIDE_REL + "usr/lib/" + library
+        # Theos links libroothide for its API, not as a marker for every package.
+        if (matching or (require_substrate and library == "libsubstrate.dylib")) and matching != {expected}:
+            errors.append(library + " must resolve through " + expected)
+    return errors
 
 
 def check_control(control, control_dir, errors):
@@ -311,9 +318,11 @@ def check_macho(root, files, prefs_exec, errors):
             if not item["platforms"] or any(p != 2 for p in item["platforms"]):
                 errors.append("%s slice %s is not built for iOS device" %
                               (rel, names[index]))
+            label = "%s slice %s" % (rel, names[index])
+            errors.extend(label + ": " + error for error in
+                          check_root_hide_dependencies(item["dependencies"], rel == TWEAK))
             if not item["code_signature"]:
-                errors.append("%s slice %s lacks LC_CODE_SIGNATURE" %
-                              (rel, names[index]))
+                errors.append("%s lacks LC_CODE_SIGNATURE" % label)
         macho_reports[rel] = {"architectures": sorted(set(names)),
                               "minimum_ios": [{"architecture": s["architecture"],
                                                "versions": [list(v) for v in s["min_versions"]]}
@@ -323,15 +332,6 @@ def check_macho(root, files, prefs_exec, errors):
                               "all_slices_signed": all(s["code_signature"] for s in slices)}
     if TWEAK not in macho_reports:
         errors.append("Pandora.dylib is not a valid Mach-O")
-        deps = []
-    else:
-        deps = macho_reports[TWEAK]["dependencies"]
-    substrate = [d for d in deps if "substrate" in d.lower()]
-    root_hide = [d for d in deps if "libroothide" in d.lower()]
-    if not any(is_root_hide_dependency(d) for d in substrate):
-        errors.append("RootHide substrate dependency must be under " + ROOTHIDE_REL)
-    if not any(is_root_hide_dependency(d) for d in root_hide):
-        errors.append("libroothide dependency must be under " + ROOTHIDE_REL)
     if prefs_exec and prefs_exec not in macho_reports:
         errors.append("PandoraPrefs executable is not a valid Mach-O")
     return macho_reports
@@ -357,8 +357,13 @@ def self_test():
     assert {p["architecture"] for p in parsed} == EXPECTED_ARCHES
     assert all(p["code_signature"] and p["min_versions"] == [(15, 0, 0)]
                for p in parsed)
-    assert is_root_hide_dependency("@loader_path/.jbroot/usr/lib/libroothide.dylib")
-    assert not is_root_hide_dependency("/var/jb/usr/lib/libroothide.dylib")
+    substrate = ROOTHIDE_REL + "usr/lib/libsubstrate.dylib"
+    roothide = ROOTHIDE_REL + "usr/lib/libroothide.dylib"
+    assert not check_root_hide_dependencies([substrate], True)
+    assert not check_root_hide_dependencies([substrate, roothide], True)
+    assert check_root_hide_dependencies([], True)
+    assert check_root_hide_dependencies([substrate, "/var/jb/usr/lib/libroothide.dylib"], True)
+    assert check_root_hide_dependencies([substrate, "/usr/lib/libsubstrate.dylib"], True)
     assert parse_control("Package: x\nVersion: 1\n Description\n") == {
         "Package": "x", "Version": "1\nDescription"}
     print("verify_package self-tests: PASS")
