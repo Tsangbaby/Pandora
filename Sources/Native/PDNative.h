@@ -22,6 +22,7 @@ BOOL PDProbeCanPresent(void);
 @interface PDOverlayLease : NSObject
 + (BOOL)finishPendingWithError:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(finishPending());
 @property (nonatomic, readonly) BOOL valid;
+@property (nonatomic, readonly) BOOL allowsDeferredFinish;
 + (nullable instancetype)attachController:(UIViewController *)controller
                           onInvalidation:(dispatch_block_t)handler
                                   error:(NSError * _Nullable * _Nullable)error

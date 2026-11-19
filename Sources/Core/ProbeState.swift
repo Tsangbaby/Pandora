@@ -53,8 +53,8 @@ enum ProbeAdmission {
     static func permits(published: Bool, closing: Bool, overlayValid: Bool) -> Bool {
         return published && !closing && overlayValid
     }
-    static func resumesClose(published: Bool, closing: Bool, overlayValid: Bool) -> Bool {
-        return published && closing && overlayValid
+    static func resumesClose(published: Bool, closing: Bool, cleanupEligible: Bool) -> Bool {
+        return published && closing && cleanupEligible
     }
 }
 

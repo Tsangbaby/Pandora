@@ -88,13 +88,13 @@ for published in [false, true] {
         for valid in [false, true] {
             check(ProbeAdmission.permits(published: published, closing: closing, overlayValid: valid) ==
                   (published && !closing && valid), "mount admission requires published valid non-retiring overlay")
-            check(ProbeAdmission.resumesClose(published: published, closing: closing, overlayValid: valid) ==
+            check(ProbeAdmission.resumesClose(published: published, closing: closing, cleanupEligible: valid) ==
                   (published && closing && valid), "automatic close only resumes genuine in-flight close")
         }
     }
 }
 for _ in 0..<100 {
-    check(!ProbeAdmission.resumesClose(published: true, closing: true, overlayValid: false),
+    check(!ProbeAdmission.resumesClose(published: true, closing: true, cleanupEligible: false),
           "persistent overlay failure cannot enqueue another automatic cleanup")
     check(!ProbeAdmission.permits(published: false, closing: false, overlayValid: true),
           "partially attached unpublished root cannot enter presenter factory")

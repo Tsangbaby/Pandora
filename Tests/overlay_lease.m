@@ -211,6 +211,7 @@ static FBSOrientationObserver *lastObserver;
 @interface PDOverlayLease : NSObject
 + (BOOL)finishPendingWithError:(NSError **)error;
 @property (nonatomic, readonly) BOOL valid;
+@property (nonatomic, readonly) BOOL allowsDeferredFinish;
 + (instancetype)attachController:(UIViewController *)controller
                  onInvalidation:(dispatch_block_t)handler error:(NSError **)error;
 - (BOOL)finishWithError:(NSError **)error;
@@ -233,7 +234,8 @@ static BOOL PDError(NSError **error, NSString *message) {
                                      userInfo:@{NSLocalizedDescriptionKey:message}];
     return NO;
 }
-BOOL PDProbeCanPresent(void) { return YES; }
+static BOOL canPresent = YES;
+BOOL PDProbeCanPresent(void) { return canPresent; }
 static NSDictionary *PDNativeSnapshot(NSError **error) {
     (void)error; snapshotReads++;
     return @{ @"parent":nativeParent, @"root":nativeRoot, @"window":nativeWindow,
@@ -264,7 +266,7 @@ static void fresh(void) {
     NSError *error = nil;
     if (![PDOverlayLease finishPendingWithError:&error] || (nativeWindow && !nativeUntouched()))
         [NSException raise:@"PDHarnessCleanup" format:@"prior cleanup/native invariant: %@", error];
-    recordingEffects = NO;
+    recordingEffects = NO; canPresent = YES;
     snapshotReads = presenterCancels = 0; lastObserver = nil; duringObserverInit = nil;
     nativeWindow = [UIWindow new]; nativeWindow.borrowed = YES;
     nativeParent = [UIViewController new]; nativeParent.borrowed = YES;
@@ -296,10 +298,14 @@ static void testNormal(void) {
           own.view.superview == nativeRoot && own.view.window == nativeWindow && own.didMoveCalls == 1 &&
           [nativeParent.children containsObject:own] && lastObserver.handler,
           "public child containment and own subview attached to borrowed root");
+    canPresent = NO;
+    CHECK(!lease.valid && lease.allowsDeferredFinish,
+          "foreground loss invalidates input but cannot prevent the FIRST deferred cleanup");
     CHECK([PDOverlayLease finishPendingWithError:&error] && !error && cleaned(own) && !lease.valid &&
           own.willMoveCalls == 1 && own.view.removeCalls == 1 && own.removeParentCalls == 1 &&
           lastObserver.invalidated && lastObserver.invalidateCalls == 1 && presenterCancels == 1,
           "finishPending removes only own containment and observer");
+    CHECK(!lease.allowsDeferredFinish, "a completed retirement cannot schedule another deferred cleanup");
     CHECK([lease finishWithError:nil] && [PDOverlayLease finishPendingWithError:nil] &&
           own.view.removeCalls == 1 && own.removeParentCalls == 1 && lastObserver.invalidateCalls == 1 &&
           presenterCancels == 1, "successful cleanup is idempotent");
@@ -316,6 +322,7 @@ static void testViewRemovalRetry(void) {
           own.view.superview == nativeRoot && !own.parentViewController && own.view.removeCalls == 1 &&
           own.removeParentCalls == 1 && lastObserver.invalidated && lastObserver.invalidateCalls == 1,
           "view removal throws: first finish NO; parent and observer still cleaned independently");
+    CHECK(!lease.allowsDeferredFinish, "a failed retirement must await explicit retry, never self-enqueue");
     CHECK(attachRefused(), "failed view removal keeps pending ticket and blocks a new attach");
     error = nil;
     CHECK([PDOverlayLease finishPendingWithError:&error] && !error && cleaned(own) &&

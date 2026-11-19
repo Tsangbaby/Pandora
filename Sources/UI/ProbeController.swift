@@ -291,12 +291,12 @@ final class PDProbeRuntime: NSObject {
     }
 
     static func resumeAfterNativeOperation(_ root: ProbeController) {
-        // Only a real operation unwind may resume an in-flight close. A failed
-        // overlay finish has valid=false and settles blocked, without a retry loop.
+        // Resume the first deferred close even after foreground/root loss.
+        // A retirement already attempted never schedules its own failed retry.
         guard ProbeAdmission.resumesClose(published: shared.root === root, closing: shared.closingRequested,
-                                          overlayValid: shared.lease?.valid == true) else { return }
+                                          cleanupEligible: shared.lease?.allowsDeferredFinish == true) else { return }
         DispatchQueue.main.async { [weak root] in
-            guard let root = root, isClosing(root), shared.lease?.valid == true else { return }
+            guard let root = root, isClosing(root), shared.lease?.allowsDeferredFinish == true else { return }
             stopControls()
         }
     }

@@ -333,6 +333,12 @@ static PDOverlayLease *PDPendingOverlay;
         if (lease.retirementRequested) [lease finishWithError:nil];
     }
 }
+- (BOOL)allowsDeferredFinish {
+    // Foreground/root validity can be lost while a native operation unwinds.
+    // It must not prevent the FIRST deferred cleanup; an already-attempted
+    // retirement, including a failed one, must not enqueue its own retry.
+    return NSThread.isMainThread && !self.invalidated && !self.retiring && !self.retirementRequested && !self.attachDepth;
+}
 - (BOOL)valid {
     return NSThread.isMainThread && !self.invalidated && !self.retiring && !self.retirementRequested && self.controller && self.parent && self.nativeRoot && self.nativeWindow &&
         PDProbeCanPresent() && !self.nativeWindow.hidden && self.nativeWindow.rootViewController==self.parent &&
