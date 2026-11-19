@@ -42,9 +42,34 @@ BOOL PDProbeCanPresent(void) {
 }
 
 static NSString *PDSceneIdentifier(void) {
-    id manager = PDObject(PDWorkspace(), @"sceneManager");
-    id value = PDObjectArgument(manager, @"_sceneIdentifierForBundleIdentifier:", PDNotes);
-    return [value isKindOfClass:NSString.class] && [value length] ? value : nil;
+    // iOS 15.4.1: SBMainWorkspace.sceneManager is nil even with Notes frontmost.
+    // Use existing main-display Scenes, never a fabricated/default Scene ID.
+    if (![PDFrontBundle() isEqualToString:PDNotes]) return nil;
+    id manager = PDObject(NSClassFromString(@"SBSceneManagerCoordinator"), @"mainDisplaySceneManager");
+    id scenes = PDObject(manager, @"allScenes");
+    if (!([scenes isKindOfClass:NSSet.class] || [scenes isKindOfClass:NSArray.class] ||
+          [scenes isKindOfClass:NSOrderedSet.class]) || [scenes count] > 128) return nil;
+    id frontBoard = PDObject(NSClassFromString(@"FBSceneManager"), @"sharedInstance");
+    Class sceneClass = NSClassFromString(@"FBScene");
+    if (!frontBoard || !sceneClass) return nil;
+    NSString *identifier = nil;
+    for (id scene in scenes) {
+        if (![scene isKindOfClass:sceneClass]) return nil;
+        id bundle = PDObject(PDObject(scene, @"clientProcess"), @"bundleIdentifier");
+        if (![bundle isKindOfClass:NSString.class]) return nil;
+        if (![bundle isEqualToString:PDNotes]) continue;
+        if (!PDMatches(scene, NSSelectorFromString(@"isValid"), @encode(BOOL), @[]) ||
+            !PDMatches(scene, NSSelectorFromString(@"isActive"), @encode(BOOL), @[]) ||
+            !PDMatches(scene, NSSelectorFromString(@"accessibilitySceneIsForegroundVisible"), @encode(BOOL), @[])) return nil;
+        if (!PDTrue(scene, NSSelectorFromString(@"isValid")) ||
+            !PDTrue(scene, NSSelectorFromString(@"isActive")) ||
+            !PDTrue(scene, NSSelectorFromString(@"accessibilitySceneIsForegroundVisible"))) continue;
+        id value = PDObject(scene, @"identifier");
+        if (identifier || ![value isKindOfClass:NSString.class] || ![value length] ||
+            PDObjectArgument(frontBoard, @"sceneWithIdentifier:", value) != scene) return nil;
+        identifier = value;
+    }
+    return [PDFrontBundle() isEqualToString:PDNotes] ? identifier : nil;
 }
 
 static id PDScene(NSString *identifier) {

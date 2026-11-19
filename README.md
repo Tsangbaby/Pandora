@@ -1,10 +1,16 @@
 # Pandora
 
-Pandora 是 Swift 为主的 iOS 双任务工作卡项目。当前 `0.1.0~probe1` 是 **RootHide 单 Scene 实验包**，不是完整分屏版本。
+Pandora 是 Swift 为主的 iOS 双任务工作卡项目。当前 `0.1.0~probe2` 是 **RootHide 单 Scene 实验包**，不是完整分屏版本。
 
 - 包名：`com.tsangbaby.pandora`；作者、维护者：Tsangbaby。
 - 实验目标：iPhone 13 Pro / iOS 15.4.1，竖屏，已在前台打开的系统备忘录。不主动启动 App、不迁移原场景、不发送合成触摸或文字。不会自动挂载，不收集笔记内容。
 - 实验依次区分显示、宿主内滚动／点击、真实落字，以及移除宿主后原生备忘录是否回到可操作状态。系统内部的呈现交接和键盘行为仍需实测。没有 A＋B、横屏分区、PiP、拖放或自定义转场动画。
+
+## probe2 修正范围
+
+probe1 真机停在 Scene 查找：前台备忘录时 `SBMainWorkspace.sceneManager` 返回 nil；`_baseSceneIdentifier` 也不是可解析的当前 Scene ID。probe2 仅改为协调器的主屏管理器读取现有 Scene 集合，严格核对所属进程 Bundle ID、唯一有效且活动/前台可见的 Scene，并要求其真实 ID 查回同一对象；不使用枚举回调、字符串包含匹配或默认 ID 猜测。
+
+只读诊断已在目标 iOS 15.4.1 上通过这条查找路径，但**新版宿主显示、触摸、落字和解除后的恢复尚未真机验收**。宿主、焦点和退出实现未改，仍须逐项测试，不把查找成功当成挂载成功。
 
 ## 手动测试
 
