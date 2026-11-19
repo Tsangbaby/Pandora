@@ -27,7 +27,7 @@ BOOL PDLeaseFlag(id object, const char *name, BOOL *value) {
     if (!type || strcmp(type, @encode(BOOL))) return NO;
     ptrdiff_t offset = ivar_getOffset(field);
     if (offset < 0 || (size_t)offset + sizeof(BOOL) > class_getInstanceSize(object_getClass(object))) return NO;
-    *value = *(const BOOL *)((__bridge const uint8_t *)object + offset);
+    *value = *(const BOOL *)((const uint8_t *)(__bridge const void *)object + offset);
     return YES;
 }
 NSArray *PDLeaseMembers(id collection) {
