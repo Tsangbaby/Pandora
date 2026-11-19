@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 // Only the manual, foreground-Notes experiment. No persisted or background sessions.
 struct ProbeState {

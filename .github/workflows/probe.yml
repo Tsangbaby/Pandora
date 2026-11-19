@@ -54,11 +54,12 @@ jobs:
       - name: Compile and run Swift Debug and Release tests
         run: |
           set +e
+          mac_sdk="$(xcrun --sdk macosx --show-sdk-path)"
           debug_build=0
           debug_test=0
           release_build=0
           release_test=0
-          swiftc -swift-version 5 -Onone Sources/Core/ProbeState.swift Tests/main.swift \
+          swiftc -sdk "$mac_sdk" -swift-version 5 -Onone Sources/Core/ProbeState.swift Tests/main.swift \
             -o "$RUNNER_TEMP/pandora-probe-debug" > ci-artifacts/swift-debug-build.log 2>&1
           debug_build=$?
           cat ci-artifacts/swift-debug-build.log
@@ -67,7 +68,7 @@ jobs:
             debug_test=$?
             cat ci-artifacts/swift-debug-test.log
           fi
-          swiftc -swift-version 5 -O Sources/Core/ProbeState.swift Tests/main.swift \
+          swiftc -sdk "$mac_sdk" -swift-version 5 -O Sources/Core/ProbeState.swift Tests/main.swift \
             -o "$RUNNER_TEMP/pandora-probe-release" > ci-artifacts/swift-release-build.log 2>&1
           release_build=$?
           cat ci-artifacts/swift-release-build.log
