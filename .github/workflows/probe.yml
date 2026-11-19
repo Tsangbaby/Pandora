@@ -1,0 +1,163 @@
+name: Pandora RootHide probe
+
+on:
+  push:
+    branches:
+      - build/0.1.0-alpha1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  roothide-probe:
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - name: Checkout source
+        id: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Initialize artifact directory
+        run: mkdir -p ci-artifacts
+
+      - name: Python verifier and manifest tests
+        run: |
+          set +e
+          python3 scripts/verify_package.py --self-test > ci-artifacts/python-tests.log 2>&1
+          verify_rc=$?
+          python3 scripts/manifest.py --self-test >> ci-artifacts/python-tests.log 2>&1
+          manifest_rc=$?
+          cat ci-artifacts/python-tests.log
+          if [ "$verify_rc" -ne 0 ] || [ "$manifest_rc" -ne 0 ]; then exit 1; fi
+
+      - name: Record commit-bound source manifest
+        if: always() && steps.checkout.outcome == 'success'
+        run: |
+          set +e
+          python3 scripts/manifest.py --commit "$GITHUB_SHA" --output ci-artifacts/manifest.json \
+            > ci-artifacts/manifest-build.log 2>&1
+          rc=$?
+          cat ci-artifacts/manifest-build.log
+          exit "$rc"
+
+      - name: Record selected Xcode and iPhoneOS SDK
+        if: always() && steps.checkout.outcome == 'success'
+        run: |
+          xcodebuild -version > ci-artifacts/xcode-version.txt 2>&1
+          xcrun --sdk iphoneos --show-sdk-version > ci-artifacts/sdk-version.txt 2>&1
+          xcrun --sdk iphoneos --show-sdk-path > ci-artifacts/sdk-path.txt 2>&1
+
+      - name: Compile and run Swift Debug and Release tests
+        run: |
+          set +e
+          debug_build=0
+          debug_test=0
+          release_build=0
+          release_test=0
+          swiftc -swift-version 5 -Onone Sources/Core/ProbeState.swift Tests/main.swift \
+            -o "$RUNNER_TEMP/pandora-probe-debug" > ci-artifacts/swift-debug-build.log 2>&1
+          debug_build=$?
+          cat ci-artifacts/swift-debug-build.log
+          if [ "$debug_build" -eq 0 ]; then
+            "$RUNNER_TEMP/pandora-probe-debug" > ci-artifacts/swift-debug-test.log 2>&1
+            debug_test=$?
+            cat ci-artifacts/swift-debug-test.log
+          fi
+          swiftc -swift-version 5 -O Sources/Core/ProbeState.swift Tests/main.swift \
+            -o "$RUNNER_TEMP/pandora-probe-release" > ci-artifacts/swift-release-build.log 2>&1
+          release_build=$?
+          cat ci-artifacts/swift-release-build.log
+          if [ "$release_build" -eq 0 ]; then
+            "$RUNNER_TEMP/pandora-probe-release" > ci-artifacts/swift-release-test.log 2>&1
+            release_test=$?
+            cat ci-artifacts/swift-release-test.log
+          fi
+          if [ "$debug_build" -ne 0 ] || [ "$debug_test" -ne 0 ] || \
+             [ "$release_build" -ne 0 ] || [ "$release_test" -ne 0 ]; then exit 1; fi
+
+      - name: Compile and execute native Objective-C ABI negative tests
+        run: |
+          set +e
+          clang -fobjc-arc -fblocks -framework Foundation -ISources/Native \
+            Tests/abi.m -o "$RUNNER_TEMP/pandora-abi-tests" \
+            > ci-artifacts/abi-build.log 2>&1
+          rc=$?
+          cat ci-artifacts/abi-build.log
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          "$RUNNER_TEMP/pandora-abi-tests" > ci-artifacts/abi-test.log 2>&1
+          rc=$?
+          cat ci-artifacts/abi-test.log
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          python3 -c 'import pathlib,sys; lines=pathlib.Path(sys.argv[1]).read_text().splitlines(); sys.exit(0 if any(x.strip()=="PANDORA_ABI_TESTS checks=18 failures=0" for x in lines) else 1)' \
+            ci-artifacts/abi-test.log > ci-artifacts/abi-assertion.log 2>&1
+          rc=$?
+          cat ci-artifacts/abi-assertion.log
+          exit "$rc"
+
+      - name: Install package build tools
+        run: |
+          set +e
+          brew install make dpkg ldid > ci-artifacts/brew-install.log 2>&1
+          rc=$?
+          cat ci-artifacts/brew-install.log
+          exit "$rc"
+
+      - name: Fetch pinned RootHide Theos and recursive submodules
+        run: |
+          set +e
+          {
+            set -e
+            git clone --no-checkout https://github.com/roothide/theos.git "$RUNNER_TEMP/theos"
+            git -C "$RUNNER_TEMP/theos" checkout --detach 958fea4f779943505b15b93c88bb4db8d97b346d
+            git -C "$RUNNER_TEMP/theos" submodule update --init --recursive
+            printf 'THEOS=%s\n' "$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+          } > ci-artifacts/theos-setup.log 2>&1
+          rc=$?
+          cat ci-artifacts/theos-setup.log
+          exit "$rc"
+
+      - name: Build RootHide phone package
+        run: |
+          set +e
+          bash scripts/build_roothide.sh > ci-artifacts/roothide-build.log 2>&1
+          rc=$?
+          cat ci-artifacts/roothide-build.log
+          exit "$rc"
+
+      - name: Independently verify original Debian package
+        run: |
+          set +e
+          shopt -s nullglob
+          packages=(ci-artifacts/*.deb)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            printf 'Expected exactly one original .deb, found %s\n' "${#packages[@]}" \
+              > ci-artifacts/package-verification.log
+            cat ci-artifacts/package-verification.log
+            exit 1
+          fi
+          python3 scripts/verify_package.py --require-ldid \
+            --json-out ci-artifacts/verify.json "${packages[0]}" \
+            > ci-artifacts/package-verification.log 2>&1
+          rc=$?
+          cat ci-artifacts/package-verification.log
+          exit "$rc"
+
+      - name: Hash all available evidence
+        if: always()
+        run: |
+          mkdir -p ci-artifacts
+          python3 scripts/manifest.py --hash-artifacts-dir ci-artifacts \
+            --output-sums ci-artifacts/SHA256SUMS
+
+      - name: Upload build and failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pandora-roothide-probe-${{ github.sha }}
+          path: ci-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
