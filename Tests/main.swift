@@ -100,4 +100,5 @@ for _ in 0..<100 {
           "partially attached unpublished root cannot enter presenter factory")
 }
 runKeyboardTests()
+runWorkspaceTests()
 print("PANDORA_STATE_TESTS checks=\(checks) failures=0")

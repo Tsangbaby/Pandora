@@ -81,8 +81,18 @@ static NSString *caseName;
 static NSString *PDFrontBundle(void) {
     return frontReads++ == 0 ? beforeBundle : afterBundle;
 }
+#ifdef PD_SCENE_BASELINE
 static id PDWorkspace(void) { return nil; } // Observed probe1 receiver chain is nil.
+#endif
 #include "scene-under-test.inc"
+
+static NSString *lookupNotes(void) {
+#ifdef PD_SCENE_BASELINE
+    return PDSceneIdentifier();
+#else
+    return PDSceneIdentifier(PDNotes);
+#endif
+}
 
 static void expect(BOOL pass, NSString *description) {
     checks++;
@@ -105,21 +115,24 @@ static FBScene *makeScene(id bundle, id identifier) {
     scene.visible = YES;
     return scene;
 }
-static FBScene *reset(NSString *name) {
+static FBScene *resetForBundle(NSString *name, NSString *bundle, NSString *identifier) {
     caseName = name;
     frontReads = roundTripReads = 0;
-    beforeBundle = afterBundle = PDNotes;
+    beforeBundle = afterBundle = bundle;
     SBMainDisplaySceneManager *main = [SBMainDisplaySceneManager new];
     FBSceneManager *fb = [FBSceneManager new];
-    FBScene *scene = makeScene(PDNotes, @"sceneID:com.apple.mobilenotes-actual-session");
+    FBScene *scene = makeScene(bundle, identifier);
     main.allScenes = [NSSet setWithObject:scene];
     fb.lookup = [@{scene.identifier:scene} mutableCopy];
     mainManager = main;
     fbManager = fb;
     return scene;
 }
+static FBScene *reset(NSString *name) {
+    return resetForBundle(name, PDNotes, @"sceneID:com.apple.mobilenotes-actual-session");
+}
 static void replaceScenes(id scenes) { [(SBMainDisplaySceneManager *)mainManager setAllScenes:scenes]; }
-static BOOL resolves(FBScene *scene) { return [PDSceneIdentifier() isEqual:scene.identifier]; }
+static BOOL resolves(FBScene *scene) { return [lookupNotes() isEqual:scene.identifier]; }
 
 int main(void) { @autoreleasepool {
     FBScene *scene = reset(@"unique native set");
@@ -134,56 +147,56 @@ int main(void) { @autoreleasepool {
     expect(resolves(scene), @"NSOrderedSet accepted");
 
     reset(@"front is not Notes"); beforeBundle = @"com.openminis.app";
-    expect(PDSceneIdentifier() == nil && roundTripReads == 0, @"no scene query for another front App");
+    expect(lookupNotes() == nil && roundTripReads == 0, @"no scene query for another front App");
     reset(@"front changed"); afterBundle = @"com.openminis.app";
-    expect(PDSceneIdentifier() == nil, @"changed foreground rejected");
+    expect(lookupNotes() == nil, @"changed foreground rejected");
     reset(@"no main manager"); mainManager = nil;
-    expect(PDSceneIdentifier() == nil, @"nil manager rejected");
+    expect(lookupNotes() == nil, @"nil manager rejected");
     reset(@"unsupported manager ABI"); mainManager = [WrongCollectionABI new];
-    expect(PDSceneIdentifier() == nil, @"wrong ABI not called");
+    expect(lookupNotes() == nil, @"wrong ABI not called");
     reset(@"nil collection"); replaceScenes(nil);
-    expect(PDSceneIdentifier() == nil, @"nil collection rejected");
+    expect(lookupNotes() == nil, @"nil collection rejected");
     reset(@"wrong collection type"); replaceScenes(@"not a collection");
-    expect(PDSceneIdentifier() == nil, @"unknown collection rejected");
+    expect(lookupNotes() == nil, @"unknown collection rejected");
     reset(@"empty collection"); replaceScenes(@[]);
-    expect(PDSceneIdentifier() == nil, @"zero scenes rejected");
+    expect(lookupNotes() == nil, @"zero scenes rejected");
     reset(@"non-Scene entry"); replaceScenes(@[[NSObject new]]);
-    expect(PDSceneIdentifier() == nil, @"unknown scene type rejected");
+    expect(lookupNotes() == nil, @"unknown scene type rejected");
     reset(@"nil FrontBoard manager"); fbManager = nil;
-    expect(PDSceneIdentifier() == nil, @"roundtrip manager required");
+    expect(lookupNotes() == nil, @"roundtrip manager required");
 
     scene = reset(@"invalid Scene"); scene.valid = NO;
-    expect(PDSceneIdentifier() == nil, @"invalid scene rejected");
+    expect(lookupNotes() == nil, @"invalid scene rejected");
     scene = reset(@"inactive Scene"); scene.active = NO;
-    expect(PDSceneIdentifier() == nil, @"inactive scene rejected");
+    expect(lookupNotes() == nil, @"inactive scene rejected");
     scene = reset(@"not foreground visible"); scene.visible = NO;
-    expect(PDSceneIdentifier() == nil, @"background/occluded scene rejected");
+    expect(lookupNotes() == nil, @"background/occluded scene rejected");
     scene = reset(@"nil process"); scene.clientProcess = nil;
-    expect(PDSceneIdentifier() == nil, @"unreadable process rejected");
+    expect(lookupNotes() == nil, @"unreadable process rejected");
     scene = reset(@"wrong process ABI"); scene.clientProcess = [WrongBundleABI new];
-    expect(PDSceneIdentifier() == nil, @"wrong bundle getter ABI never called");
+    expect(lookupNotes() == nil, @"wrong bundle getter ABI never called");
     scene = reset(@"non-string bundle"); [(MockProcess *)scene.clientProcess setBundleIdentifier:@23];
-    expect(PDSceneIdentifier() == nil, @"non-string bundle rejected");
+    expect(lookupNotes() == nil, @"non-string bundle rejected");
     scene = reset(@"bundle substring impostor");
     [(MockProcess *)scene.clientProcess setBundleIdentifier:@"prefix.com.apple.mobilenotes.suffix"];
-    expect(PDSceneIdentifier() == nil, @"substring match must not identify Notes");
+    expect(lookupNotes() == nil, @"substring match must not identify Notes");
     scene = reset(@"nil identifier"); scene.identifier = nil;
-    expect(PDSceneIdentifier() == nil, @"nil identifier rejected");
+    expect(lookupNotes() == nil, @"nil identifier rejected");
     scene = reset(@"empty identifier"); scene.identifier = @"";
-    expect(PDSceneIdentifier() == nil, @"empty identifier rejected");
+    expect(lookupNotes() == nil, @"empty identifier rejected");
     scene = reset(@"non-string identifier"); scene.identifier = @42;
-    expect(PDSceneIdentifier() == nil, @"non-string identifier rejected");
+    expect(lookupNotes() == nil, @"non-string identifier rejected");
     scene = reset(@"lookup returns nil"); [(FBSceneManager *)fbManager setLookup:[NSMutableDictionary new]];
-    expect(PDSceneIdentifier() == nil, @"unresolved real identifier rejected");
+    expect(lookupNotes() == nil, @"unresolved real identifier rejected");
     scene = reset(@"lookup returns different object");
     [(FBSceneManager *)fbManager setLookup:[@{scene.identifier:makeScene(PDNotes,scene.identifier)} mutableCopy]];
-    expect(PDSceneIdentifier() == nil, @"equal identifier cannot replace object identity");
+    expect(lookupNotes() == nil, @"equal identifier cannot replace object identity");
 
     scene = reset(@"two eligible Notes Scenes");
     FBScene *second = makeScene(PDNotes, @"sceneID:com.apple.mobilenotes-other-session");
     [(FBSceneManager *)fbManager lookup][second.identifier] = second;
     replaceScenes(@[scene,second]);
-    expect(PDSceneIdentifier() == nil, @"ambiguous Notes scenes rejected");
+    expect(lookupNotes() == nil, @"ambiguous Notes scenes rejected");
 
     scene = reset(@"one active and one inactive Notes Scene");
     second = makeScene(PDNotes, @"sceneID:inactive"); second.active = NO;
@@ -197,7 +210,7 @@ int main(void) { @autoreleasepool {
 
     scene = reset(@"unreadable companion identity");
     foreign = makeScene(@42, @"unknown"); replaceScenes(@[scene,foreign]);
-    expect(PDSceneIdentifier() == nil, @"unreadable identity prevents uniqueness proof");
+    expect(lookupNotes() == nil, @"unreadable identity prevents uniqueness proof");
 
     scene = reset(@"unreadable Notes companion state ABI");
     Class wrongState = objc_allocateClassPair(FBScene.class, "MockWrongActiveABI", 0);
@@ -208,13 +221,42 @@ int main(void) { @autoreleasepool {
     second.identifier = @"sceneID:unreadable-state";
     second.valid = second.visible = YES;
     replaceScenes(@[scene,second]);
-    expect(PDSceneIdentifier() == nil, @"unknown Notes state ABI prevents uniqueness proof");
+    expect(lookupNotes() == nil, @"unknown Notes state ABI prevents uniqueness proof");
 
     scene = reset(@"too many scenes");
     NSMutableArray *oversized = [NSMutableArray new];
     for (NSUInteger i=0;i<129;i++) [oversized addObject:scene];
     replaceScenes(oversized);
-    expect(PDSceneIdentifier() == nil && roundTripReads == 0, @"bounded collection checked before iteration");
+    expect(lookupNotes() == nil && roundTripReads == 0, @"bounded collection checked before iteration");
+
+#ifndef PD_SCENE_BASELINE
+    NSString *const files = @"com.apple.DocumentsApp";
+    NSString *const filesID = @"sceneID:fixture-files-session";
+    scene = resetForBundle(@"Files exact process bundle", files, filesID);
+    FBScene *notes = makeScene(PDNotes, @"sceneID:com.apple.DocumentsApp-owned-by-Notes");
+    FBScene *impostor = makeScene(@"prefix.com.apple.DocumentsApp.suffix", @"sceneID:impostor");
+    [(FBSceneManager *)fbManager lookup][notes.identifier] = notes;
+    [(FBSceneManager *)fbManager lookup][impostor.identifier] = impostor;
+    replaceScenes(@[notes,impostor,scene]);
+    NSString *identifier = PDSceneIdentifier(files);
+    expect([identifier isEqualToString:filesID], @"Files selected by exact process bundle, not identifier text");
+    expect(roundTripReads == 1 && PDScene(identifier) == scene, @"Files identifier roundtrips to its own Scene");
+
+    resetForBundle(@"Files requested with Notes foreground", files, filesID); beforeBundle = PDNotes;
+    expect(PDSceneIdentifier(files) == nil && roundTripReads == 0, @"wrong foreground rejected before lookup");
+    resetForBundle(@"Files loses foreground", files, filesID); afterBundle = PDNotes;
+    expect(PDSceneIdentifier(files) == nil && frontReads == 2, @"Files lookup rechecks foreground");
+
+    scene = resetForBundle(@"Files same ID different object", files, filesID);
+    [(FBSceneManager *)fbManager lookup][filesID] = makeScene(files, filesID);
+    expect(PDSceneIdentifier(files) == nil && roundTripReads == 1, @"same Files ID cannot replace object identity");
+
+    scene = resetForBundle(@"two eligible Files Scenes", files, filesID);
+    second = makeScene(files, @"sceneID:other-files-session");
+    [(FBSceneManager *)fbManager lookup][second.identifier] = second;
+    replaceScenes(@[scene,second]);
+    expect(PDSceneIdentifier(files) == nil, @"ambiguous Files scenes rejected");
+#endif
 
     printf("PANDORA_SCENE_TESTS checks=%lu failures=%lu\n", (unsigned long)checks, (unsigned long)failures);
     return failures ? 1 : 0;

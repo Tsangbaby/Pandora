@@ -1,6 +1,6 @@
 Package: com.tsangbaby.pandora
 Name: Pandora
-Version: 0.1.0~probe3.3
+Version: 0.1.0~probe3.4
 Architecture: iphoneos-arm64e
 Description: 手动触发的前台单 Scene 实验验证包，非完整分屏产品。
 Maintainer: Tsangbaby

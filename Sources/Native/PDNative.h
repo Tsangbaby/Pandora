@@ -1,17 +1,24 @@
 #import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
-BOOL PDProbeCanPresent(void);
 
+typedef NS_ENUM(NSInteger, PDProbeTarget) {
+    PDProbeTargetNotes,
+    PDProbeTargetFiles,
+};
+BOOL PDProbeCanPresent(PDProbeTarget target);
+
+@class PDOverlayLease;
 @interface PDSceneSession : NSObject
 @property (nonatomic, strong, readonly, nullable) UIView *hostedView;
 @property (nonatomic, readonly) CGSize sourceSize;
 @property (nonatomic, readonly) BOOL remainsForeground;
 + (BOOL)cancelPendingWithError:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(cancelPending());
 + (nullable instancetype)captureInView:(UIView *)view
+                         fromOverlay:(PDOverlayLease *)overlay
                    onOwnershipChange:(dispatch_block_t)handler
                                error:(NSError * _Nullable * _Nullable)error
-    NS_SWIFT_NAME(capture(in:onOwnershipChange:));
+    NS_SWIFT_NAME(capture(in:from:onOwnershipChange:));
 - (BOOL)updateFrame:(CGRect)frame error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(update(frame:));
 - (BOOL)activateWithError:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(activate());
 - (BOOL)requestFocusWithError:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(requestFocus());
@@ -24,9 +31,10 @@ BOOL PDProbeCanPresent(void);
 @property (nonatomic, readonly) BOOL valid;
 @property (nonatomic, readonly) BOOL allowsDeferredFinish;
 + (nullable instancetype)attachController:(UIViewController *)controller
+                                  target:(PDProbeTarget)target
                           onInvalidation:(dispatch_block_t)handler
-                                  error:(NSError * _Nullable * _Nullable)error
-    NS_SWIFT_NAME(attach(controller:onInvalidation:));
+                                   error:(NSError * _Nullable * _Nullable)error
+    NS_SWIFT_NAME(attach(controller:target:onInvalidation:));
 - (BOOL)finishWithError:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(finish());
 @end
 NS_ASSUME_NONNULL_END

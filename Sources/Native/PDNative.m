@@ -6,7 +6,14 @@
 #import <objc/message.h>
 #import <math.h>
 
-static NSString *const PDNotes = @"com.apple.mobilenotes";
+static NSString *PDTargetBundle(PDProbeTarget target) {
+    switch (target) {
+        case PDProbeTargetNotes: return @"com.apple.mobilenotes";
+        case PDProbeTargetFiles: return @"com.apple.DocumentsApp";
+        default: return nil;
+    }
+}
+
 static BOOL PDError(NSError **error, NSString *message) {
     if (error) *error = [NSError errorWithDomain:@"com.tsangbaby.pandora.probe" code:1
         userInfo:@{NSLocalizedDescriptionKey: message}];
@@ -33,21 +40,21 @@ static BOOL PDTrue(id receiver, SEL selector) {
         ((BOOL (*)(id, SEL))objc_msgSend)(receiver, selector);
 }
 
-BOOL PDProbeCanPresent(void) {
-    if (!NSThread.isMainThread) return NO;
+BOOL PDProbeCanPresent(PDProbeTarget target) {
+    NSString *bundle = PDTargetBundle(target);
+    if (!NSThread.isMainThread || !bundle) return NO;
     @try {
         id lock = PDObject(NSClassFromString(@"SBLockScreenManager"), @"sharedInstance");
         SEL locked = NSSelectorFromString(@"isUILocked");
         return PDMatches(lock, locked, @encode(BOOL), @[]) &&
             !((BOOL (*)(id, SEL))objc_msgSend)(lock, locked) &&
-            [PDFrontBundle() isEqualToString:PDNotes];
+            [PDFrontBundle() isEqualToString:bundle];
     } @catch (__unused NSException *exception) { return NO; }
 }
 
-static NSString *PDSceneIdentifier(void) {
-    // iOS 15.4.1: SBMainWorkspace.sceneManager is nil even with Notes frontmost.
+static NSString *PDSceneIdentifier(NSString *bundle) {
     // Use existing main-display Scenes, never a fabricated/default Scene ID.
-    if (![PDFrontBundle() isEqualToString:PDNotes]) return nil;
+    if (!bundle.length || ![PDFrontBundle() isEqualToString:bundle]) return nil;
     id manager = PDObject(NSClassFromString(@"SBSceneManagerCoordinator"), @"mainDisplaySceneManager");
     id scenes = PDObject(manager, @"allScenes");
     if (!([scenes isKindOfClass:NSSet.class] || [scenes isKindOfClass:NSArray.class] ||
@@ -58,9 +65,9 @@ static NSString *PDSceneIdentifier(void) {
     NSString *identifier = nil;
     for (id scene in scenes) {
         if (![scene isKindOfClass:sceneClass]) return nil;
-        id bundle = PDObject(PDObject(scene, @"clientProcess"), @"bundleIdentifier");
-        if (![bundle isKindOfClass:NSString.class]) return nil;
-        if (![bundle isEqualToString:PDNotes]) continue;
+        id ownerBundle = PDObject(PDObject(scene, @"clientProcess"), @"bundleIdentifier");
+        if (![ownerBundle isKindOfClass:NSString.class]) return nil;
+        if (![ownerBundle isEqualToString:bundle]) continue;
         if (!PDMatches(scene, NSSelectorFromString(@"isValid"), @encode(BOOL), @[]) ||
             !PDMatches(scene, NSSelectorFromString(@"isActive"), @encode(BOOL), @[]) ||
             !PDMatches(scene, NSSelectorFromString(@"accessibilitySceneIsForegroundVisible"), @encode(BOOL), @[])) return nil;
@@ -72,7 +79,7 @@ static NSString *PDSceneIdentifier(void) {
             PDObjectArgument(frontBoard, @"sceneWithIdentifier:", value) != scene) return nil;
         identifier = value;
     }
-    return [PDFrontBundle() isEqualToString:PDNotes] ? identifier : nil;
+    return [PDFrontBundle() isEqualToString:bundle] ? identifier : nil;
 }
 
 static id PDScene(NSString *identifier) {
@@ -90,11 +97,22 @@ static BOOL PDNativeFrame(CGRect frame) {
         fabs(frame.origin.x)<0.5 && fabs(frame.origin.y)<0.5 && frame.size.width>=160 && frame.size.height>=160 &&
         frame.size.width<=8192 && frame.size.height<=8192;
 }
-static NSDictionary *PDNativeSnapshot(NSError **error) {
-    if (!PDProbeCanPresent()) { PDError(error,@"请先在竖屏打开前台备忘录；没有创建或激活场景。"); return nil; }
-    NSString *identifier = PDSceneIdentifier(); id scene = PDScene(identifier);
-    if (![scene isKindOfClass:NSClassFromString(@"FBScene")] || !PDTrue(scene,NSSelectorFromString(@"isValid")) ||
-        !PDTrue(scene,NSSelectorFromString(@"isActive"))) { PDError(error,@"未取得唯一有效的前台 Notes Scene。"); return nil; }
+static BOOL PDBoundSceneIsCurrent(PDProbeTarget target, NSString *identifier, id scene) {
+    if (!scene || !identifier.length || !PDProbeCanPresent(target)) return NO;
+    @try {
+        if (PDScene(identifier) != scene) return NO;
+        id bundle = PDObject(PDObject(scene, @"clientProcess"), @"bundleIdentifier");
+        return [bundle isKindOfClass:NSString.class] && [bundle isEqualToString:PDTargetBundle(target)] &&
+            PDTrue(scene,NSSelectorFromString(@"isValid")) && PDTrue(scene,NSSelectorFromString(@"isActive"));
+    } @catch (__unused NSException *exception) { return NO; }
+}
+
+static NSDictionary *PDReadNativeSnapshot(PDProbeTarget target, NSError **error) {
+    if (!PDProbeCanPresent(target)) { PDError(error,@"请先在竖屏打开选定的 App；没有创建或激活场景。"); return nil; }
+    NSString *identifier = PDSceneIdentifier(PDTargetBundle(target)); id scene = PDScene(identifier);
+    if (![scene isKindOfClass:NSClassFromString(@"FBScene")] || !PDBoundSceneIsCurrent(target,identifier,scene)) {
+        PDError(error,@"未取得选定 App 的唯一有效前台场景。"); return nil;
+    }
     id manager = PDReadCachedPresentationManager(scene);
     if (![manager isKindOfClass:NSClassFromString(@"UIScenePresentationManager")] ||
         !PDLiveFlag(manager,"_invalidated") || PDLeaseObject(manager,"_scene","@\"FBScene\"") != scene) {
@@ -135,13 +153,26 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
         PDLeaseObject(nativeView,"_hostContainerView","@\"_UISceneLayerHostContainerView\"")!=container) {
         PDError(error,@"原生完整层容器关系不一致，未接管。"); return nil;
     }
-    if (!PDProbeCanPresent() || PDScene(identifier)!=scene || PDReadCachedPresentationManager(scene)!=manager)
+    if (!PDBoundSceneIsCurrent(target,identifier,scene) || PDReadCachedPresentationManager(scene)!=manager)
         { PDError(error,@"准备期间前台或场景改变，已取消。"); return nil; }
-    return @{@"scene":scene,@"identifier":identifier,@"manager":manager,@"owner":owner,@"native":native,
-        @"nativeView":nativeView,@"window":window,@"parent":parent,@"root":root,@"container":container,@"frame":[NSValue valueWithCGRect:frame]};
+    return @{ @"scene":scene,@"identifier":[identifier copy],@"manager":manager,@"owner":owner,@"native":native,
+        @"nativeView":nativeView,@"window":window,@"parent":parent,@"root":root,@"container":container,@"frame":[NSValue valueWithCGRect:frame] };
 }
 
+static NSDictionary *PDNativeSnapshot(PDProbeTarget target, NSError **error) {
+    @try { return PDReadNativeSnapshot(target,error); }
+    @catch (__unused NSException *exception) {
+        PDError(error,@"原生场景读取失败，未接管或创建场景。"); return nil;
+    }
+}
+
+@interface PDOverlayLease (SceneBinding)
+- (PDProbeTarget)target;
+- (BOOL)matchesSnapshot:(NSDictionary *)snapshot;
+@end
+
 @interface PDSceneSession ()
+@property (nonatomic) PDProbeTarget target;
 @property (nonatomic, strong, readwrite) UIView *hostedView;
 @property (nonatomic, readwrite) CGSize sourceSize;
 @property (nonatomic, strong) NSDictionary *snapshot;
@@ -156,15 +187,19 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
 + (BOOL)cancelPendingWithError:(NSError **)error {
     return [PDPresenterLease cancelOutstandingWithError:error];
 }
-+ (instancetype)captureInView:(UIView *)carrier onOwnershipChange:(dispatch_block_t)changed error:(NSError **)error {
-    if (!NSThread.isMainThread) { PDError(error,@"必须在主线程操作。"); return nil; }
-    NSDictionary *snapshot = PDNativeSnapshot(error);
-    if (!snapshot) return nil;
-    if (carrier.window!=snapshot[@"window"] || ![carrier isDescendantOfView:snapshot[@"root"]] ||
-        !CGAffineTransformIsIdentity(carrier.transform)) {
-        PDError(error,@"卡片不在已验证的同一原生坐标层级中，没有创建呈现者。"); return nil;
++ (instancetype)captureInView:(UIView *)carrier fromOverlay:(PDOverlayLease *)overlay
+            onOwnershipChange:(dispatch_block_t)changed error:(NSError **)error {
+    if (!NSThread.isMainThread || !overlay.valid) {
+        PDError(error,@"当前实验面板的场景已失效，没有挂载。"); return nil;
     }
-    PDSceneSession *session = [self new]; session.snapshot = snapshot; session.carrier = carrier;
+    NSDictionary *snapshot = PDNativeSnapshot(overlay.target,error);
+    if (!snapshot) return nil;
+    if (![overlay matchesSnapshot:snapshot] || carrier.window!=snapshot[@"window"] ||
+        ![carrier isDescendantOfView:snapshot[@"root"]] || !CGAffineTransformIsIdentity(carrier.transform)) {
+        PDError(error,@"卡片不在准备时绑定的原生场景和坐标层级中，没有创建呈现者。"); return nil;
+    }
+    PDSceneSession *session = [self new]; session.target = overlay.target;
+    session.snapshot = snapshot; session.carrier = carrier;
     session.sourceSize = [snapshot[@"frame"] CGRectValue].size;
     @try {
         session.lease = [PDPresenterLease stageWithManager:snapshot[@"manager"] owner:snapshot[@"owner"]
@@ -178,7 +213,7 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
                 fabs(view.bounds.size.width-session.sourceSize.width)>0.5 || fabs(view.bounds.size.height-session.sourceSize.height)>0.5) return NO;
             session.hostedView = view; session.baseFrame = view.frame;
             [carrier addSubview:view];
-            return view.window==snapshot[@"window"] && PDProbeCanPresent();
+            return view.window==snapshot[@"window"] && PDBoundSceneIsCurrent(session.target,snapshot[@"identifier"],snapshot[@"scene"]);
         } error:error];
         if (!prepared) {
             [session finishWithError:nil]; PDError(error,@"原生视图准备失败或已取消，已尝试只撤销实验对象。"); return nil;
@@ -191,13 +226,12 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
 - (BOOL)matchesCurrentEnvironment {
     NSDictionary *s = self.snapshot;
     UIWindow *window = s[@"window"]; UIViewController *parent = s[@"parent"]; UIView *root = s[@"root"];
-    return s && !self.lease.ended && PDProbeCanPresent() &&
-        PDScene(s[@"identifier"])==s[@"scene"] && PDReadCachedPresentationManager(s[@"scene"])==s[@"manager"] &&
+    return s && !self.lease.ended && PDBoundSceneIsCurrent(self.target,s[@"identifier"],s[@"scene"]) &&
+        PDReadCachedPresentationManager(s[@"scene"])==s[@"manager"] &&
         PDLeaseObject(s[@"manager"],"_scenePresenterOwner","@\"_UIScenePresenterOwner\"")==s[@"owner"] &&
         window.rootViewController==parent && parent.viewIfLoaded==root && root.window==window &&
         !window.hidden && !root.hidden && self.carrier.window==window && self.hostedView.window==window &&
-        [self.carrier isDescendantOfView:root] && PDTrue(s[@"scene"],NSSelectorFromString(@"isValid")) &&
-        PDTrue(s[@"scene"],NSSelectorFromString(@"isActive"));
+        [self.carrier isDescendantOfView:root];
 }
 - (BOOL)updateFrame:(CGRect)frame error:(NSError **)error {
     if (!NSThread.isMainThread || ![self matchesCurrentEnvironment] ||
@@ -260,6 +294,7 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
     @catch (__unused NSException *exception) { return NO; }
 }
 - (BOOL)requestFocusWithError:(NSError **)error {
+    if (self.target != PDProbeTargetNotes) return PDError(error,@"文件实验不主动请求键盘焦点。");
     if (!self.remainsForeground) return PDError(error,@"原生承载或前台已变化，拒绝焦点请求。");
     @try {
         id focus = PDObject(PDWorkspace(),@"keyboardFocusController"); SEL selector=NSSelectorFromString(@"userFocusRequestForScene:reason:");
@@ -279,6 +314,13 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
 @end
 
 @interface PDOverlayLease ()
+@property (nonatomic) PDProbeTarget target;
+@property (nonatomic, weak) id boundScene;
+@property (nonatomic, copy) NSString *boundIdentifier;
+@property (nonatomic, weak) id boundManager;
+@property (nonatomic, weak) id boundOwner;
+@property (nonatomic, weak) id boundNativePresenter;
+@property (nonatomic, weak) id boundContainer;
 @property (nonatomic, strong) UIViewController *controller;
 @property (nonatomic, weak) UIViewController *parent;
 @property (nonatomic, weak) UIView *nativeRoot;
@@ -297,12 +339,16 @@ static PDOverlayLease *PDPendingOverlay;
     if (!NSThread.isMainThread) return PDError(error,@"清理必须在主线程。");
     return !PDPendingOverlay || [PDPendingOverlay finishWithError:error];
 }
-+ (instancetype)attachController:(UIViewController *)controller onInvalidation:(dispatch_block_t)changed error:(NSError **)error {
++ (instancetype)attachController:(UIViewController *)controller target:(PDProbeTarget)target
+                 onInvalidation:(dispatch_block_t)changed error:(NSError **)error {
     if (!NSThread.isMainThread || controller.parentViewController || PDPendingOverlay) {
         PDError(error,@"控制视图已有父控制器或上一清理未确认，禁止重复附加。"); return nil;
     }
-    NSDictionary *snapshot = PDNativeSnapshot(error); if (!snapshot) return nil;
+    NSDictionary *snapshot = PDNativeSnapshot(target,error); if (!snapshot) return nil;
     PDOverlayLease *lease = [self new];
+    lease.target = target; lease.boundScene = snapshot[@"scene"]; lease.boundIdentifier = snapshot[@"identifier"];
+    lease.boundManager = snapshot[@"manager"]; lease.boundOwner = snapshot[@"owner"];
+    lease.boundNativePresenter = snapshot[@"native"]; lease.boundContainer = snapshot[@"container"];
     lease.controller = controller; lease.parent = snapshot[@"parent"];
     lease.nativeRoot = snapshot[@"root"]; lease.nativeWindow = snapshot[@"window"]; lease.invalidationHandler = changed;
     PDPendingOverlay = lease; // Exists before the first observer/containment side effect.
@@ -348,10 +394,18 @@ static PDOverlayLease *PDPendingOverlay;
 }
 - (BOOL)valid {
     return NSThread.isMainThread && !self.invalidated && !self.retiring && !self.retirementRequested && self.controller && self.parent && self.nativeRoot && self.nativeWindow &&
-        PDProbeCanPresent() && !self.nativeWindow.hidden && self.nativeWindow.rootViewController==self.parent &&
+        PDBoundSceneIsCurrent(self.target,self.boundIdentifier,self.boundScene) &&
+        !self.nativeWindow.hidden && self.nativeWindow.rootViewController==self.parent &&
         self.parent.viewIfLoaded==self.nativeRoot && self.nativeRoot.window==self.nativeWindow &&
         self.controller.parentViewController==self.parent && self.controller.viewIfLoaded.superview==self.nativeRoot &&
         self.controller.viewIfLoaded.window==self.nativeWindow && CGAffineTransformIsIdentity(self.nativeRoot.transform);
+}
+- (BOOL)matchesSnapshot:(NSDictionary *)snapshot {
+    return self.valid && self.boundScene == snapshot[@"scene"] &&
+        [self.boundIdentifier isEqual:snapshot[@"identifier"]] && self.nativeWindow == snapshot[@"window"] &&
+        self.parent == snapshot[@"parent"] && self.nativeRoot == snapshot[@"root"] &&
+        self.boundManager == snapshot[@"manager"] && self.boundOwner == snapshot[@"owner"] &&
+        self.boundNativePresenter == snapshot[@"native"] && self.boundContainer == snapshot[@"container"];
 }
 - (BOOL)finishWithError:(NSError **)error {
     if (!NSThread.isMainThread) return PDError(error,@"清理必须在主线程。");

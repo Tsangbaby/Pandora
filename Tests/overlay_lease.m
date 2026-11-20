@@ -208,13 +208,20 @@ static FBSOrientationObserver *lastObserver;
 
 // Minimal public declarations matching PDNative.h, minus nullability/Swift names.
 // The real header imports UIKit and must NOT be imported into this executable.
+typedef NS_ENUM(NSInteger, PDProbeTarget) {
+    PDProbeTargetNotes,
+    PDProbeTargetFiles,
+};
 @interface PDOverlayLease : NSObject
 + (BOOL)finishPendingWithError:(NSError **)error;
 @property (nonatomic, readonly) BOOL valid;
 @property (nonatomic, readonly) BOOL allowsDeferredFinish;
-+ (instancetype)attachController:(UIViewController *)controller
++ (instancetype)attachController:(UIViewController *)controller target:(PDProbeTarget)target
                  onInvalidation:(dispatch_block_t)handler error:(NSError **)error;
 - (BOOL)finishWithError:(NSError **)error;
+@end
+@interface PDOverlayLease (SceneBinding)
+- (BOOL)matchesSnapshot:(NSDictionary *)snapshot;
 @end
 @interface PDPresenterLease : NSObject
 + (BOOL)cancelOutstandingWithError:(NSError **)error;
@@ -235,10 +242,20 @@ static BOOL PDError(NSError **error, NSString *message) {
     return NO;
 }
 static BOOL canPresent = YES;
-BOOL PDProbeCanPresent(void) { return canPresent; }
-static NSDictionary *PDNativeSnapshot(NSError **error) {
-    (void)error; snapshotReads++;
-    return @{ @"parent":nativeParent, @"root":nativeRoot, @"window":nativeWindow,
+static PDProbeTarget foregroundTarget;
+static NSObject *nativeScene;
+static NSString *nativeIdentifier;
+static BOOL PDBoundSceneIsCurrent(PDProbeTarget target, NSString *identifier, id scene) {
+    return canPresent && target == foregroundTarget && scene && scene == nativeScene &&
+        [identifier isEqualToString:nativeIdentifier];
+}
+static NSDictionary *PDNativeSnapshot(PDProbeTarget target, NSError **error) {
+    snapshotReads++;
+    if (!PDBoundSceneIsCurrent(target, nativeIdentifier, nativeScene)) {
+        PDError(error, @"Target has no current scene"); return nil;
+    }
+    return @{ @"scene":nativeScene, @"identifier":nativeIdentifier,
+              @"parent":nativeParent, @"root":nativeRoot, @"window":nativeWindow,
               @"container":borrowedContainer, @"nativeView":borrowedChild.view,
               @"native":nativePresenter, @"manager":nativeManager, @"owner":nativeOwner };
 }
@@ -266,7 +283,8 @@ static void fresh(void) {
     NSError *error = nil;
     if (![PDOverlayLease finishPendingWithError:&error] || (nativeWindow && !nativeUntouched()))
         [NSException raise:@"PDHarnessCleanup" format:@"prior cleanup/native invariant: %@", error];
-    recordingEffects = NO; canPresent = YES;
+    recordingEffects = NO; canPresent = YES; foregroundTarget = PDProbeTargetNotes;
+    nativeScene = [NSObject new]; nativeIdentifier = @"sceneID:overlay-fixture";
     snapshotReads = presenterCancels = 0; lastObserver = nil; duringObserverInit = nil;
     nativeWindow = [UIWindow new]; nativeWindow.borrowed = YES;
     nativeParent = [UIViewController new]; nativeParent.borrowed = YES;
@@ -283,7 +301,7 @@ static void fresh(void) {
     recordingEffects = YES;
 }
 static PDOverlayLease *attach(UIViewController *own, NSError **error) {
-    return [PDOverlayLease attachController:own onInvalidation:^{} error:error];
+    return [PDOverlayLease attachController:own target:PDProbeTargetNotes onInvalidation:^{} error:error];
 }
 static BOOL attachRefused(void) {
     NSUInteger before = snapshotReads; NSError *error = nil;
@@ -469,6 +487,37 @@ static void testReentrantObserver(void) {
           "new attach succeeds after observer reentrancy is fully unwound, without native mutation");
 }
 
+static void testSceneBinding(void) {
+    fresh(); foregroundTarget = PDProbeTargetFiles;
+    UIViewController *own = [UIViewController new]; NSError *error = nil;
+    PDOverlayLease *lease = [PDOverlayLease attachController:own target:PDProbeTargetFiles
+                                             onInvalidation:^{} error:&error];
+    NSDictionary *snapshot = PDNativeSnapshot(PDProbeTargetFiles, &error);
+    CHECK(lease.valid && snapshot && !error && [lease matchesSnapshot:snapshot],
+          "Files overlay matches its exact bound Scene and hierarchy");
+
+    NSMutableDictionary *stale = [snapshot mutableCopy];
+    stale[@"scene"] = [NSObject new];
+    CHECK(lease.valid && ![lease matchesSnapshot:stale],
+          "a different Scene object with the same identifier and hierarchy cannot be captured");
+    stale = [snapshot mutableCopy];
+    stale[@"identifier"] = @"sceneID:stale-overlay-fixture";
+    CHECK(lease.valid && ![lease matchesSnapshot:stale],
+          "a different identifier with the same Scene and hierarchy cannot be captured");
+
+    stale = [snapshot mutableCopy];
+    stale[@"manager"] = [NSObject new];
+    CHECK(lease.valid && ![lease matchesSnapshot:stale],
+          "the same scene and window cannot be re-bound to a different presentation manager");
+
+    foregroundTarget = PDProbeTargetNotes;
+    CHECK(!lease.valid && ![lease matchesSnapshot:snapshot] && lease.allowsDeferredFinish && attachRefused(),
+          "foreground target switch blocks match and reattach without preventing cleanup");
+    error = nil;
+    CHECK([PDOverlayLease finishPendingWithError:&error] && !error && cleaned(own),
+          "stale binding can still retire only its own containment");
+}
+
 int main(void) { @autoreleasepool {
     @try {
         caseName = @"normal public containment";
@@ -487,6 +536,8 @@ int main(void) { @autoreleasepool {
         testReentrantChild();
         caseName = @"reentrant observer cancellation";
         testReentrantObserver();
+        caseName = @"typed Scene binding";
+        testSceneBinding();
     } @catch (NSException *exception) {
         failures++;
         fprintf(stderr, "OVERLAY EXCEPTION %s: %s: %s\n", caseName.UTF8String,

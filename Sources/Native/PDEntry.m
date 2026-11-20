@@ -22,10 +22,12 @@ static void PDFrontChanged(id self, SEL command, id display) {
 static void PDNotification(__unused CFNotificationCenterRef center,
                            __unused void *observer, CFStringRef name,
                            __unused const void *object, __unused CFDictionaryRef info) {
-    BOOL show = CFEqual(name, CFSTR("com.tsangbaby.pandora.probe.show"));
+    const char *action = NULL;
+    if (name && CFEqual(name, CFSTR("com.tsangbaby.pandora.probe.show"))) action = "showControls";
+    else if (name && CFEqual(name, CFSTR("com.tsangbaby.pandora.probe.show-files"))) action = "showFilesControls";
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!show) PDRuntime("stopControls");
-        else if (PDLifecycleReady) PDRuntime("showControls");
+        if (!action) PDRuntime("stopControls");
+        else if (PDLifecycleReady) PDRuntime(action);
         else NSLog(@"[Pandora] Lifecycle ABI unavailable; controls remain off.");
     });
 }
@@ -49,6 +51,9 @@ __attribute__((constructor)) static void PDInstall(void) {
         CFNotificationCenterRef center = CFNotificationCenterGetDarwinNotifyCenter();
         CFNotificationCenterAddObserver(center, NULL, PDNotification,
             CFSTR("com.tsangbaby.pandora.probe.show"), NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+        CFNotificationCenterAddObserver(center, NULL, PDNotification,
+            CFSTR("com.tsangbaby.pandora.probe.show-files"), NULL,
             CFNotificationSuspensionBehaviorDeliverImmediately);
         CFNotificationCenterAddObserver(center, NULL, PDNotification,
             CFSTR("com.tsangbaby.pandora.probe.stop"), NULL,

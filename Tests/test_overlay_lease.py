@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile the exact FINAL PDOverlayLease section + Foundation doubles on macOS.
 
---check-source checks extraction bytes/hashes, declarations and 40 CHECK sites;
+--check-source checks extraction bytes/hashes, declarations and 46 CHECK sites;
 it does NOT compile Objective-C or execute native assertions. Every invocation
 writes overlay-lease-{report.json,build.log,test.log} under ci-artifacts (override
 with --artifacts-dir / CI_ARTIFACTS_DIR). No UIKit, real window, or device testing.
@@ -26,7 +26,8 @@ FILES = {
     'fixture': ROOT / 'Tests/overlay_lease.m',
     'driver': Path(__file__).resolve(),
 }
-EXPECTED_CHECKS = 40
+EXPECTED_CHECKS = 46
+EXPECTED_GROUPS = 9
 INCLUDE = 'overlay-lease-under-test.inc'
 SUMMARY = r'^PANDORA_OVERLAY_LEASE_TESTS checks=(\d+) failures=(\d+)$'
 SCOPE = ('Exact final production PDOverlayLease section + Foundation environment doubles; '
@@ -113,12 +114,12 @@ def validate(payload, section):
         '+ (BOOL)finishPendingWithError:', 'self.attachDepth || self.retiring',
         'lease.attachDepth--;', 'lease.retirementRequested', 'self.orientationObserver = nil;',
         'self.controller.viewIfLoaded.superview', 'PDPendingOverlay = nil;'))
-    result['runtime_assertion_sites_exactly_40'] = (
+    result[f'runtime_assertion_sites_exactly_{EXPECTED_CHECKS}'] = (
         len(re.findall(r'^\s*CHECK\(', fixture, re.M)) == EXPECTED_CHECKS)
     tests = re.findall(r'^static void (test\w+)\(void\)', fixture, re.M)
-    result['eight_groups_invoked_exactly_once_without_assertion_loops'] = (
-        len(tests) == 8 and all(len(re.findall(r'\b' + name + r'\(\);', fixture)) == 1
-                                for name in tests) and
+    result['nine_groups_invoked_exactly_once_without_assertion_loops'] = (
+        len(tests) == EXPECTED_GROUPS and all(len(re.findall(r'\b' + name + r'\(\);', fixture)) == 1
+                                              for name in tests) and
         not re.search(r'\b(?:for|while)\s*\(', code_only(fixture)))
     return result
 
@@ -257,7 +258,7 @@ def main():
             count, failed = map(int, summary[0])
             record.update(checks=count, failures=failed)
             if count != EXPECTED_CHECKS:
-                return finish('incomplete-runtime', 'Expected exactly 40 native assertions', 1)
+                return finish('incomplete-runtime', f'Expected exactly {EXPECTED_CHECKS} native assertions', 1)
             if failed or run.returncode:
                 return finish('runtime-failed', 'Native containment/cleanup assertions failed', 1)
             return finish('native-passed')

@@ -37,6 +37,8 @@ final class ProbeRootView: UIView {
 }
 
 final class ProbeController: UIViewController {
+    let target: PDProbeTarget
+    private var isFiles: Bool { target == .files }
     private(set) var state = ProbeState()
     let panel = UIView()
     private let titleLabel = UILabel()
@@ -53,6 +55,13 @@ final class ProbeController: UIViewController {
     private var appliedContentFrame: CGRect?
     private var updatingSessionLayout = false
 
+    init(target: PDProbeTarget) {
+        self.target = target
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
     override func loadView() {
         let root = ProbeRootView()
         root.owner = self
@@ -67,15 +76,17 @@ final class ProbeController: UIViewController {
         panel.layer.borderWidth = 1
         panel.layer.borderColor = UIColor.separator.cgColor
         view.addSubview(panel)
-        titleLabel.text = "Pandora · 单 Scene 实验"
+        titleLabel.text = isFiles ? "Pandora · 文件单卡实验" : "Pandora · 单 Scene 实验"
         titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-        status.text = "先打开备忘录，再手动挂载；不会自动切换 App。"
+        status.text = isFiles ? "手动挂载当前「文件」场景；只测画面、滚动、点击及归还。" :
+            "先打开备忘录，再手动挂载；不会自动切换 App。"
         status.font = .systemFont(ofSize: 12)
         status.numberOfLines = 3
         panel.addSubview(titleLabel)
         panel.addSubview(status)
-        setup(startButton, "挂载备忘录", #selector(start))
+        setup(startButton, isFiles ? "挂载文件" : "挂载备忘录", #selector(start))
         setup(focusButton, "请求输入", #selector(focus))
+        focusButton.isHidden = isFiles
         setup(stopButton, "结束实验", #selector(stop))
         setup(closeButton, "关闭", #selector(close))
         card.backgroundColor = .clear
@@ -104,13 +115,14 @@ final class ProbeController: UIViewController {
 
     @objc private func start() {
         defer { PDProbeRuntime.resumeAfterNativeOperation(self) }
-        guard PDProbeRuntime.permitsInteraction(self), (view as? ProbeRootView)?.identityLost == false, let token = state.begin() else { return }
+        guard let overlay = PDProbeRuntime.interactiveOverlay(for: self),
+              (view as? ProbeRootView)?.identityLost == false, let token = state.begin() else { return }
         refreshButtons()
         do {
             layoutControls()
             card.frame = view.bounds
             card.isHidden = false
-            let candidate = try PDSceneSession.capture(in: card, onOwnershipChange: { [weak self] in
+            let candidate = try PDSceneSession.capture(in: card, from: overlay, onOwnershipChange: { [weak self] in
                 guard let root = self else { return }
                 if PDProbeRuntime.isClosing(root) { PDProbeRuntime.stopControls(); return }
                 guard root.state.generation == token else { return }
@@ -128,7 +140,8 @@ final class ProbeController: UIViewController {
             try layoutSession(candidate)
             card.isHidden = false
             view.backgroundColor = .black
-            status.text = "原生呈现者已承载完整内容层；请先测试触摸，再请求输入。尚未验收。"
+            status.text = isFiles ? "文件场景已挂载；请验证滚动、点击与结束后的原生操作。" :
+                "原生呈现者已承载完整内容层；请先测试触摸，再请求输入。尚未验收。"
         } catch {
             _ = end(error.localizedDescription)
         }
@@ -137,7 +150,7 @@ final class ProbeController: UIViewController {
 
     @objc private func focus() {
         defer { PDProbeRuntime.resumeAfterNativeOperation(self) }
-        guard PDProbeRuntime.permitsInteraction(self), (view as? ProbeRootView)?.identityLost == false,
+        guard !isFiles, PDProbeRuntime.permitsInteraction(self), (view as? ProbeRootView)?.identityLost == false,
               state.phase == .attached, !state.focusRequested, let session = session else { return }
         do {
             try layoutSession(session) // Fresh positive occlusion check before requesting input.
@@ -190,7 +203,7 @@ final class ProbeController: UIViewController {
     private func refreshButtons() {
         let permitted = PDProbeRuntime.permitsInteraction(self)
         startButton.isEnabled = permitted && state.phase == .idle
-        focusButton.isEnabled = permitted && state.phase == .attached && !state.focusRequested
+        focusButton.isEnabled = !isFiles && permitted && state.phase == .attached && !state.focusRequested
         stopButton.isEnabled = state.phase != .idle
     }
 
@@ -215,8 +228,9 @@ final class ProbeController: UIViewController {
         titleLabel.frame = CGRect(x: 12, y: 8, width: panel.bounds.width - 76, height: 24)
         closeButton.frame = CGRect(x: panel.bounds.width - 56, y: 0, width: 52, height: 40)
         status.frame = CGRect(x: 12, y: 34, width: panel.bounds.width - 24, height: 48)
-        let cellWidth = (panel.bounds.width - 16) / 3
-        for (index, button) in [startButton, focusButton, stopButton].enumerated() {
+        let buttons = isFiles ? [startButton, stopButton] : [startButton, focusButton, stopButton]
+        let cellWidth = (panel.bounds.width - 16) / CGFloat(buttons.count)
+        for (index, button) in buttons.enumerated() {
             button.frame = CGRect(x: 8 + CGFloat(index) * cellWidth, y: 88, width: cellWidth, height: 40)
         }
     }
@@ -245,7 +259,9 @@ final class ProbeController: UIViewController {
         case .present(let value): frame = value
         case .returnToNative:
             throw NSError(domain: "com.tsangbaby.pandora.geometry", code: 3,
-                          userInfo: [NSLocalizedDescriptionKey: "已观察到卡片外键盘遮挡，实验已结束；请在原生备忘录继续输入。"])
+                          userInfo: [NSLocalizedDescriptionKey: isFiles ?
+                            "已观察到卡外键盘遮挡，已结束实验；请在原生文件界面继续操作。" :
+                            "已观察到卡片外键盘遮挡，实验已结束；请在原生备忘录继续输入。"])
         case .insufficientSpace:
             throw NSError(domain: "com.tsangbaby.pandora.geometry", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "可用空间不足，需结束实验；不会缩到无法输入。"])
@@ -280,28 +296,41 @@ final class PDProbeRuntime: NSObject {
     private static let shared = PDProbeRuntime()
     private var root: ProbeController?
     private var lease: PDOverlayLease?
-    private var armedUntil: TimeInterval = 0
+    private var armed: (target: PDProbeTarget, deadline: TimeInterval)?
+    private weak var preparingRoot: ProbeController?
     private var closingRequested = false
 
-    @objc static func showControls() {
+    @objc static func showControls() { arm(.notes) }
+    @objc static func showFilesControls() { arm(.files) }
+
+    private static func arm(_ target: PDProbeTarget) {
         precondition(Thread.isMainThread)
-        guard shared.root == nil else { return }
-        shared.armedUntil = ProcessInfo.processInfo.systemUptime + 30
+        guard shared.root == nil, shared.preparingRoot == nil else { return }
+        shared.armed = (target, ProcessInfo.processInfo.systemUptime + 30)
         foregroundChanged()
     }
 
-    private func presentControls() {
-        armedUntil = 0
-        let root = ProbeController()
+    private func presentControls(_ target: PDProbeTarget) {
+        armed = nil
+        let candidate = ProbeController(target: target)
+        preparingRoot = candidate
+        closingRequested = false
+        defer {
+            preparingRoot = nil
+            if root == nil { closingRequested = false }
+        }
         do {
             try PDOverlayLease.finishPending()
-            let lease = try PDOverlayLease.attach(controller: root, onInvalidation: {
+            guard !closingRequested else { return }
+            let lease = try PDOverlayLease.attach(controller: candidate, target: target, onInvalidation: { [weak candidate] in
+                guard let candidate, PDProbeRuntime.shared.root === candidate ||
+                      PDProbeRuntime.shared.preparingRoot === candidate else { return }
                 PDProbeRuntime.stopControls()
             })
-            guard PDProbeCanPresent() else { try lease.finish(); return }
-            self.root = root
+            guard !closingRequested, lease.valid else { try lease.finish(); return }
+            self.root = candidate
             self.lease = lease
-            root.refreshEnvironment()
+            candidate.refreshEnvironment()
         } catch {
             NSLog("[Pandora] Native controls refused: %@", error.localizedDescription)
         }
@@ -312,8 +341,11 @@ final class PDProbeRuntime: NSObject {
         let runtime = shared
         let root = runtime.root
         let lease = runtime.lease
-        runtime.armedUntil = 0
+        runtime.armed = nil
         runtime.closingRequested = true
+        // During attachment, the pending lease cannot finish reentrantly. The
+        // publication guard retires it when the native call unwinds.
+        if root == nil && runtime.preparingRoot != nil { return }
         guard root?.end("实验已结束；请检查原生画面、滚动和输入是否恢复。") ?? true else { return }
         do {
             try lease?.finish()
@@ -329,6 +361,10 @@ final class PDProbeRuntime: NSObject {
     static func permitsInteraction(_ root: ProbeController) -> Bool {
         return ProbeAdmission.permits(published: shared.root === root, closing: shared.closingRequested,
                                       overlayValid: shared.lease?.valid == true)
+    }
+
+    static func interactiveOverlay(for root: ProbeController) -> PDOverlayLease? {
+        return permitsInteraction(root) ? shared.lease : nil
     }
 
     static func isClosing(_ root: ProbeController) -> Bool {
@@ -357,10 +393,13 @@ final class PDProbeRuntime: NSObject {
         precondition(Thread.isMainThread)
         let runtime = shared
         if let root = runtime.root {
-            if PDProbeCanPresent() && runtime.lease?.valid == true { root.foregroundChanged() }
+            if runtime.lease?.valid == true { root.foregroundChanged() }
             else { stopControls() }
-        } else if runtime.armedUntil > ProcessInfo.processInfo.systemUptime && PDProbeCanPresent() {
-            runtime.presentControls()
+        } else if let preparing = runtime.preparingRoot {
+            if !PDProbeCanPresent(preparing.target) { runtime.closingRequested = true }
+        } else if let armed = runtime.armed {
+            if ProcessInfo.processInfo.systemUptime >= armed.deadline { runtime.armed = nil }
+            else if PDProbeCanPresent(armed.target) { runtime.presentControls(armed.target) }
         }
     }
 }

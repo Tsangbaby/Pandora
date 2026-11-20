@@ -14,14 +14,17 @@ final class RootListController: PSViewController {
         instructions.font = .preferredFont(forTextStyle: .body)
         instructions.adjustsFontForContentSizeCategory = true
         instructions.numberOfLines = 0
-        instructions.text = "单 Scene 实验 · 仅 iOS 15.4.1。先在备忘录准备一篇非敏感测试笔记，再回到此页点「准备实验」。30 秒内返回备忘录并确认挂载；不会自动挂载或输入。"
+        instructions.text = "单 Scene 实验 · 仅 iOS 15.4.1。选择备忘录或文件，30 秒内回到所选 App 并手动挂载。请使用非敏感内容；文件测试仅验证显示、滚动、点击和归还。"
         let arm = UIButton(type: .system)
-        arm.setTitle("准备实验", for: .normal)
+        arm.setTitle("准备备忘录实验", for: .normal)
         arm.addTarget(self, action: #selector(prepareProbe), for: .touchUpInside)
+        let files = UIButton(type: .system)
+        files.setTitle("准备文件实验", for: .normal)
+        files.addTarget(self, action: #selector(prepareFilesProbe), for: .touchUpInside)
         let stop = UIButton(type: .system)
         stop.setTitle("停止实验／取消准备", for: .normal)
         stop.addTarget(self, action: #selector(stopProbe), for: .touchUpInside)
-        let stack = UIStackView(arrangedSubviews: [instructions, arm, stop])
+        let stack = UIStackView(arrangedSubviews: [instructions, arm, files, stop])
         stack.axis = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -32,13 +35,22 @@ final class RootListController: PSViewController {
             stack.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -20),
             arm.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            files.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             stop.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
     }
 
     @objc private func prepareProbe() {
-        post("com.tsangbaby.pandora.probe.show")
-        let alert = UIAlertController(title: "准备 Pandora 实验", message: "现在返回竖屏备忘录。在实验面板点「挂载备忘录」才开始。若没有出现面板，请停止测试并记录情况。", preferredStyle: .alert)
+        prepare(app: "备忘录", notification: "com.tsangbaby.pandora.probe.show")
+    }
+
+    @objc private func prepareFilesProbe() {
+        prepare(app: "文件", notification: "com.tsangbaby.pandora.probe.show-files")
+    }
+
+    private func prepare(app: String, notification: String) {
+        post(notification)
+        let alert = UIAlertController(title: "准备\(app)实验", message: "请在 30 秒内手动回到竖屏「\(app)」。点实验面板的「挂载\(app)」才开始。若没有面板，请记录情况，不要反复尝试。", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好", style: .default))
         present(alert, animated: true)
     }
