@@ -3,7 +3,7 @@ name: Pandora RootHide probe
 on:
   push:
     branches:
-      - fix/0.1.0-native-presenter-probe3
+      - fix/0.1.0-probe3.2-transform-contract
   workflow_dispatch:
 
 permissions:
@@ -161,6 +161,9 @@ jobs:
           python3 Tests/test_overlay_lease.py > ci-artifacts/overlay-lease-driver.log 2>&1
           overlay_rc=$?
           cat ci-artifacts/overlay-lease-driver.log
+          python3 Tests/test_host_transformer.py > ci-artifacts/host-transformer-driver.log 2>&1
+          transform_rc=$?
+          cat ci-artifacts/host-transformer-driver.log
           clang -std=c11 -Wall -Wextra -Werror -ISources/Native Tests/native_policy.c -lm \
             -o "$RUNNER_TEMP/pandora-native-policy" > ci-artifacts/native-policy-build.log 2>&1
           policy_build=$?
@@ -171,7 +174,7 @@ jobs:
             policy_test=$?
             cat ci-artifacts/native-policy-test.log
           fi
-          if [ "$lease_rc" -ne 0 ] || [ "$overlay_rc" -ne 0 ] || [ "$policy_build" -ne 0 ] || [ "$policy_test" -ne 0 ]; then exit 1; fi
+          if [ "$lease_rc" -ne 0 ] || [ "$overlay_rc" -ne 0 ] || [ "$transform_rc" -ne 0 ] || [ "$policy_build" -ne 0 ] || [ "$policy_test" -ne 0 ]; then exit 1; fi
 
       - name: Independently verify original Debian package
         run: |

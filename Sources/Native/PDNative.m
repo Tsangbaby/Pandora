@@ -2,6 +2,7 @@
 #import "PDABI.h"
 #import "PDPresenterLease.h"
 #import "PDNativeProfile.h"
+#import "PDHostTransformer.h"
 #import <objc/message.h>
 #import <math.h>
 
@@ -208,28 +209,28 @@ static NSDictionary *PDNativeSnapshot(NSError **error) {
         !CGRectContainsRect(self.carrier.bounds,frame)) return PDError(error,@"目标卡片几何无效，拒绝变换。");
     CGFloat sx = mapping.a;
     CGAffineTransform transform = CGAffineTransformMake(mapping.a,mapping.b,mapping.c,mapping.d,mapping.tx,mapping.ty);
-    Class transformClass = NSClassFromString(@"UITransformer");
-    Class baseTransformClass = NSClassFromString(@"UITransform");
-    SEL factory = NSSelectorFromString(@"transformWithCGAffineTransform:");
-    if (!transformClass || ![transformClass isSubclassOfClass:baseTransformClass] ||
-        !PDMatches(transformClass,factory,"@",@[[NSString stringWithUTF8String:@encode(CGAffineTransform)]]))
-        return PDError(error,@"原生 UITransformer 工厂 ABI 不匹配。");
     @try {
         __block NSString *failure = @"原生布局操作被取消。";
         BOOL updated = [self.lease performOperation:^BOOL{
-        id value = ((id (*)(id,SEL,CGAffineTransform))objc_msgSend)(transformClass,factory,transform);
-        if (!value || ![value isKindOfClass:transformClass]) { failure = @"原生工厂未返回 UITransformer。"; return NO; }
+        NSError *constructionError = nil; // Local, not an autoreleasing out-parameter captured by a block.
+        id value = PDCreateNativeHostTransformer(transform,&constructionError);
+        if (!value) { failure = constructionError.localizedDescription ?: @"原生组合变换创建失败。"; return NO; }
         __block BOOL applied = NO;
         void (^modify)(id) = ^(id context) {
             SEL setter = NSSelectorFromString(@"setHostTransformer:");
             if ([context isKindOfClass:NSClassFromString(@"UIMutableScenePresentationContext")] &&
                 PDMatches(context,setter,"v",@[@"@"])) {
-                ((void (*)(id,SEL,id))objc_msgSend)(context,setter,value); applied = YES;
+                ((void (*)(id,SEL,id))objc_msgSend)(context,setter,value);
+                applied = PDNativeHostTransformerMatches(PDObject(context,@"hostTransformer"),transform);
             }
         };
         SEL change = NSSelectorFromString(@"modifyPresentationContext:");
         ((void (*)(id,SEL,id))objc_msgSend)(self.lease.presenter,change,modify);
-        if (!applied) { failure = @"原生上下文未接收几何变换。"; return NO; }
+        if (!applied) { failure = @"原生可变上下文未保留预期变换类型或矩阵。"; return NO; }
+        id published = PDObject(self.lease.presenter,@"presentationContext");
+        if (!PDNativeHostTransformerMatches(PDObject(published,@"hostTransformer"),transform)) {
+            failure = @"原生上下文复制后矩阵回查不匹配，拒绝激活。"; return NO;
+        }
         self.hostedView.clipsToBounds = YES;
         self.hostedView.layer.cornerRadius = 16/sx; // Only our presentation view.
         CGRect actual = [self.hostedView convertRect:self.hostedView.bounds toView:self.carrier];
