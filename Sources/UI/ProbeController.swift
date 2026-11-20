@@ -47,7 +47,10 @@ final class ProbeController: UIViewController {
     private let closeButton = UIButton(type: .system)
     private let card = UIView()
     private var session: PDSceneSession?
-    private var keyboardHeight: CGFloat = 0
+    private var keyboardEnvironment = ProbeKeyboardEnvironment()
+    private var keyboardObservers: [NSObjectProtocol] = []
+    private weak var laidOutSession: PDSceneSession?
+    private var appliedContentFrame: CGRect?
     private var updatingSessionLayout = false
 
     override func loadView() {
@@ -78,10 +81,17 @@ final class ProbeController: UIViewController {
         card.backgroundColor = .clear
         card.isHidden = true
         view.insertSubview(card, belowSubview: panel)
-        NotificationCenter.default.addObserver(self, selector: #selector(keyboard(_:)),
-            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(keyboard(_:)),
-            name: UIResponder.keyboardWillHideNotification, object: nil)
+        // Observe the environment during idle/mounting too, but never apply
+        // layout to an uncommitted session. Missing past events remain unknown.
+        let names: [Notification.Name] = [UIResponder.keyboardWillChangeFrameNotification,
+            UIResponder.keyboardDidChangeFrameNotification, UIResponder.keyboardWillHideNotification,
+            UIResponder.keyboardDidHideNotification]
+        keyboardObservers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                self?.keyboard(note)
+            }
+        }
+        panel.accessibilityValue = keyboardEnvironment.accessibilitySummary
         refreshButtons()
     }
 
@@ -113,6 +123,9 @@ final class ProbeController: UIViewController {
                 _ = end("准备已取消，未提交界面状态。")
                 return
             }
+            // Reconcile live outside-keyboard evidence after the native owner
+            // has transferred ALL hosted layers, never before acquisition.
+            try layoutSession(candidate)
             card.isHidden = false
             view.backgroundColor = .black
             status.text = "原生呈现者已承载完整内容层；请先测试触摸，再请求输入。尚未验收。"
@@ -127,6 +140,7 @@ final class ProbeController: UIViewController {
         guard PDProbeRuntime.permitsInteraction(self), (view as? ProbeRootView)?.identityLost == false,
               state.phase == .attached, !state.focusRequested, let session = session else { return }
         do {
+            try layoutSession(session) // Fresh positive occlusion check before requesting input.
             try session.requestFocus()
             _ = state.markFocus(state.generation)
             status.text = "已发出焦点请求；点卡片正文输入，确认文字只落在备忘录。"
@@ -152,7 +166,8 @@ final class ProbeController: UIViewController {
         }
         _ = state.finishCancellation(token, succeeded: succeeded)
         card.isHidden = true
-        keyboardHeight = 0
+        appliedContentFrame = nil
+        laidOutSession = nil
         view.backgroundColor = .clear
         refreshButtons()
         return succeeded
@@ -179,16 +194,18 @@ final class ProbeController: UIViewController {
         stopButton.isEnabled = state.phase != .idle
     }
 
-    @objc private func keyboard(_ note: Notification) {
-        guard state.phase == .attached else { return }
-        if note.name == UIResponder.keyboardWillHideNotification {
-            keyboardHeight = 0
-        } else if let value = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue,
-                  let window = view.window {
-            let frame = view.convert(value.cgRectValue, from: window.screen.coordinateSpace).intersection(view.bounds)
-            keyboardHeight = !frame.isNull && frame.maxY >= view.bounds.maxY - 1 ? frame.height : 0
+    private func keyboard(_ note: Notification) {
+        precondition(Thread.isMainThread)
+        if note.name == UIResponder.keyboardDidHideNotification {
+            keyboardEnvironment.recordHidden()
+        } else {
+            let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+            keyboardEnvironment.recordFrame(frame)
         }
-        view.setNeedsLayout()
+        panel.accessibilityValue = keyboardEnvironment.accessibilitySummary
+        // Notification rectangles are global hints, not proven outside-card
+        // occlusion. No focus, native setter, or restore work is scheduled here.
+        if state.phase == .attached && session != nil { view.setNeedsLayout() }
     }
 
     private func layoutControls() {
@@ -205,18 +222,46 @@ final class ProbeController: UIViewController {
     }
 
     private func layoutSession(_ session: PDSceneSession) throws {
-        guard !updatingSessionLayout else { return }
+        guard !updatingSessionLayout, self.session === session,
+              state.phase == .mounting || state.phase == .attached else { return }
         updatingSessionLayout = true
         defer { updatingSessionLayout = false }
         card.frame = view.bounds // One shared coordinate plane; no raw-host scaling.
+        if state.phase == .attached && (!session.remainsForeground || !PDProbeRuntime.permitsInteraction(self) ||
+            (view as? ProbeRootView)?.identityLost != false) {
+            throw NSError(domain: "com.tsangbaby.pandora.geometry", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "原生呈现关系已改变，需结束实验。"])
+        }
         let top = panel.frame.maxY + 12
-        let bottom = view.bounds.height - max(12, view.safeAreaInsets.bottom) - keyboardHeight
+        let bottom = view.bounds.height - max(12, view.safeAreaInsets.bottom)
         let available = CGRect(x: 12, y: top, width: view.bounds.width - 24, height: max(0, bottom - top))
-        guard let frame = ProbeGeometry.fit(source: session.sourceSize, available: available) else {
+        // Only inspect live occluders after attachment; before it the original
+        // native presentation still owns the layers and is not outside evidence.
+        let outside = state.phase == .attached ?
+            ProbeKeyboardMonitor.outsideKeyboard(in: view, hostedView: session.hostedView).frames : []
+        let frame: CGRect
+        switch ProbeKeyboardLayout.hostedScene(source: session.sourceSize, available: available,
+                                               outsideKeyboardFrames: outside) {
+        case .present(let value): frame = value
+        case .returnToNative:
+            throw NSError(domain: "com.tsangbaby.pandora.geometry", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "已观察到卡片外键盘遮挡，实验已结束；请在原生备忘录继续输入。"])
+        case .insufficientSpace:
             throw NSError(domain: "com.tsangbaby.pandora.geometry", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "可用空间不足，需结束实验；不会缩到无法输入。"])
         }
+        // Do not re-publish an unchanged, still-correct hostTransformer merely
+        // for a keyboard notification. Actual native geometry drift is checked.
+        if laidOutSession === session && appliedContentFrame == frame, let host = session.hostedView {
+            let actual = host.convert(host.bounds, to: card)
+            if ProbeKeyboardLayout.isFiniteRect(actual) &&
+                abs(actual.minX - frame.minX) <= 0.5 && abs(actual.minY - frame.minY) <= 0.5 &&
+                abs(actual.width - frame.width) <= 0.5 && abs(actual.height - frame.height) <= 0.5 { return }
+        }
         try session.update(frame: frame)
+        guard self.session === session, state.phase == .mounting || state.phase == .attached else { return }
+        laidOutSession = session
+        appliedContentFrame = frame
     }
 
     override func viewDidLayoutSubviews() {
@@ -227,7 +272,7 @@ final class ProbeController: UIViewController {
         catch { end(error.localizedDescription) }
     }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit { for token in keyboardObservers { NotificationCenter.default.removeObserver(token) } }
 }
 
 @objc(PDProbeRuntime)

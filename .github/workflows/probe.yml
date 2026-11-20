@@ -3,7 +3,7 @@ name: Pandora RootHide probe
 on:
   push:
     branches:
-      - fix/0.1.0-probe3.2-transform-contract
+      - fix/0.1.0-probe3.3-keyboard-layout
   workflow_dispatch:
 
 permissions:
@@ -41,6 +41,18 @@ jobs:
           if [ "$verify_rc" -ne 0 ] || [ "$manifest_rc" -ne 0 ] || [ "$source_rc" -ne 0 ] || \
              [ "$source_fetch_rc" -ne 0 ] || [ "$baseline_rc" -ne 0 ]; then exit 1; fi
 
+      - name: Execute keyboard wiring and working-parent counterexamples
+        run: |
+          set +e
+          python3 Tests/test_keyboard_source.py > ci-artifacts/keyboard-source-candidate.log 2>&1
+          candidate_rc=$?
+          git fetch --no-tags --depth=1 origin d2318f1b830263b8423427c7ae7879692c73bc3b > ci-artifacts/keyboard-source-fetch.log 2>&1
+          fetch_rc=$?
+          python3 Tests/test_keyboard_source.py --baseline > ci-artifacts/keyboard-source-baseline.log 2>&1
+          baseline_rc=$?
+          cat ci-artifacts/keyboard-source-candidate.log ci-artifacts/keyboard-source-baseline.log
+          if [ "$candidate_rc" -ne 0 ] || [ "$fetch_rc" -ne 0 ] || [ "$baseline_rc" -ne 0 ]; then exit 1; fi
+
       - name: Record commit-bound source manifest
         if: always() && steps.checkout.outcome == 'success'
         run: |
@@ -66,7 +78,7 @@ jobs:
           debug_test=0
           release_build=0
           release_test=0
-          swiftc -sdk "$mac_sdk" -swift-version 5 -Onone Sources/Core/ProbeState.swift Tests/main.swift \
+          swiftc -sdk "$mac_sdk" -swift-version 5 -Onone Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Tests/keyboard.swift Tests/main.swift \
             -o "$RUNNER_TEMP/pandora-probe-debug" > ci-artifacts/swift-debug-build.log 2>&1
           debug_build=$?
           cat ci-artifacts/swift-debug-build.log
@@ -75,7 +87,7 @@ jobs:
             debug_test=$?
             cat ci-artifacts/swift-debug-test.log
           fi
-          swiftc -sdk "$mac_sdk" -swift-version 5 -O Sources/Core/ProbeState.swift Tests/main.swift \
+          swiftc -sdk "$mac_sdk" -swift-version 5 -O Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Tests/keyboard.swift Tests/main.swift \
             -o "$RUNNER_TEMP/pandora-probe-release" > ci-artifacts/swift-release-build.log 2>&1
           release_build=$?
           cat ci-artifacts/swift-release-build.log
@@ -164,6 +176,9 @@ jobs:
           python3 Tests/test_host_transformer.py > ci-artifacts/host-transformer-driver.log 2>&1
           transform_rc=$?
           cat ci-artifacts/host-transformer-driver.log
+          python3 Tests/test_keyboard_monitor.py > ci-artifacts/keyboard-monitor-driver.log 2>&1
+          monitor_rc=$?
+          cat ci-artifacts/keyboard-monitor-driver.log
           clang -std=c11 -Wall -Wextra -Werror -ISources/Native Tests/native_policy.c -lm \
             -o "$RUNNER_TEMP/pandora-native-policy" > ci-artifacts/native-policy-build.log 2>&1
           policy_build=$?
@@ -174,7 +189,7 @@ jobs:
             policy_test=$?
             cat ci-artifacts/native-policy-test.log
           fi
-          if [ "$lease_rc" -ne 0 ] || [ "$overlay_rc" -ne 0 ] || [ "$transform_rc" -ne 0 ] || [ "$policy_build" -ne 0 ] || [ "$policy_test" -ne 0 ]; then exit 1; fi
+          if [ "$lease_rc" -ne 0 ] || [ "$overlay_rc" -ne 0 ] || [ "$transform_rc" -ne 0 ] || [ "$monitor_rc" -ne 0 ] || [ "$policy_build" -ne 0 ] || [ "$policy_test" -ne 0 ]; then exit 1; fi
 
       - name: Independently verify original Debian package
         run: |

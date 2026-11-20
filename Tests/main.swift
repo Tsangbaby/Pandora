@@ -99,4 +99,5 @@ for _ in 0..<100 {
     check(!ProbeAdmission.permits(published: false, closing: false, overlayValid: true),
           "partially attached unpublished root cannot enter presenter factory")
 }
+runKeyboardTests()
 print("PANDORA_STATE_TESTS checks=\(checks) failures=0")
