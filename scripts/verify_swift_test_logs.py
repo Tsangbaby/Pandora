@@ -2,6 +2,7 @@
 """Require exact summaries from the separately compiled Swift debug/release tests."""
 import pathlib, sys
 patterns={
+ 'PANDORA_DOCK_TESTS':(50,0),
  'PANDORA_ROTATION_TESTS':(34,0),
  'PANDORA_WORKSPACE_TESTS':(96,0),
  'PANDORA_KEYBOARD_TESTS':(96,0),

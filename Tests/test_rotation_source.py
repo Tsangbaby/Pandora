@@ -19,8 +19,9 @@ class HandoffWiring(unittest.TestCase):
         self.assertEqual(offsets, sorted(set(offsets)))
 
     def test_choose_only_from_live_panel(self):
-        click = between(UI, '@objc private func rotate()', 'fileprivate var canRotate:')
-        self.ordered(click, 'guard canRotate', 'if !confirmingRotation', 'status.text', 'PDProbeRuntime.rotate(from: self)')
+        swipe = between(UI, 'private func handleSwipe(', '@objc private func stop()')
+        self.ordered(swipe, 'guard canSwipeHeader', 'WorkspaceEdgeMotion.decision', 'case .apply:',
+                     'return PDProbeRuntime.rotate(from: self)')
         self.assertIn('state.phase == .attached && !updatingSessionLayout', UI)
         self.assertIn('session?.remainsForeground == true', UI)
 
@@ -66,7 +67,8 @@ class HandoffWiring(unittest.TestCase):
         self.ordered(stop, 'runtime.armed = nil', 'runtime.rotation.cancel()', 'runtime.retireControls(')
         end = between(UI, 'func end(_ message:', 'func foregroundChanged()')
         self.assertIn('PDProbeRuntime.discardMountOffer(for: self)', end)
-        self.assertIn('shared.root === root, let offer = root.rotationOffer', UI)
+        discard = between(UI, 'static func discardMountOffer(', 'static func isClosing(')
+        self.ordered(discard, 'guard shared.root === root', 'let offer = root.rotationOffer', 'shared.rotation.discardOffer(offer)')
         detach = between(UI, 'static func rootDetached(', '@objc static func foregroundChanged()')
         self.assertIn('shared.root === root, !shared.retiringControls', detach)
         self.assertIn('com.apple.springboard.lockstate', (ROOT / 'Sources/Native/PDEntry.m').read_text())

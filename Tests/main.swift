@@ -102,4 +102,5 @@ for _ in 0..<100 {
 runKeyboardTests()
 runWorkspaceTests()
 runRotationTests()
+runDockTests()
 print("PANDORA_STATE_TESTS checks=\(checks) failures=0")

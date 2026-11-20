@@ -3,7 +3,7 @@ name: Pandora RootHide probe
 on:
   push:
     branches:
-      - fix/0.1.0-probe3.5-serial-rotation
+      - fix/0.1.0-probe3.6-dock-motion
   workflow_dispatch:
 
 permissions:
@@ -83,7 +83,7 @@ jobs:
           debug_test=0
           release_build=0
           release_test=0
-          swiftc -sdk "$mac_sdk" -swift-version 5 -Onone Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Sources/Core/WorkspaceState.swift Sources/Core/WorkspaceRotation.swift Tests/workspace.swift Tests/rotation.swift Tests/keyboard.swift Tests/main.swift \
+          swiftc -sdk "$mac_sdk" -swift-version 5 -Onone Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Sources/Core/WorkspaceState.swift Sources/Core/WorkspaceRotation.swift Sources/Core/WorkspaceDock.swift Tests/workspace.swift Tests/rotation.swift Tests/dock.swift Tests/keyboard.swift Tests/main.swift \
             -o "$RUNNER_TEMP/pandora-probe-debug" > ci-artifacts/swift-debug-build.log 2>&1
           debug_build=$?
           cat ci-artifacts/swift-debug-build.log
@@ -92,7 +92,7 @@ jobs:
             debug_test=$?
             cat ci-artifacts/swift-debug-test.log
           fi
-          swiftc -sdk "$mac_sdk" -swift-version 5 -O Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Sources/Core/WorkspaceState.swift Sources/Core/WorkspaceRotation.swift Tests/workspace.swift Tests/rotation.swift Tests/keyboard.swift Tests/main.swift \
+          swiftc -sdk "$mac_sdk" -swift-version 5 -O Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Sources/Core/WorkspaceState.swift Sources/Core/WorkspaceRotation.swift Sources/Core/WorkspaceDock.swift Tests/workspace.swift Tests/rotation.swift Tests/dock.swift Tests/keyboard.swift Tests/main.swift \
             -o "$RUNNER_TEMP/pandora-probe-release" > ci-artifacts/swift-release-build.log 2>&1
           release_build=$?
           cat ci-artifacts/swift-release-build.log
@@ -104,6 +104,16 @@ jobs:
           if [ "$debug_build" -ne 0 ] || [ "$debug_test" -ne 0 ] || \
              [ "$release_build" -ne 0 ] || [ "$release_test" -ne 0 ]; then exit 1; fi
           python3 scripts/verify_swift_test_logs.py ci-artifacts/swift-debug-test.log ci-artifacts/swift-release-test.log
+
+      - name: Verify dock wiring and execute card motion with host doubles
+        run: |
+          set +e
+          python3 Tests/test_dock_source.py > ci-artifacts/dock-source.log 2>&1
+          source_rc=$?
+          python3 Tests/test_card_motion.py > ci-artifacts/card-motion-report.json
+          motion_rc=$?
+          cat ci-artifacts/dock-source.log ci-artifacts/card-motion-report.json
+          if [ "$source_rc" -ne 0 ] || [ "$motion_rc" -ne 0 ]; then exit 1; fi
 
       - name: Compile and execute native Objective-C ABI negative tests
         run: |

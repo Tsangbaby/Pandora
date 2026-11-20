@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 PACKAGE = "com.tsangbaby.pandora"
-VERSION = "0.1.0~probe3.5"
+VERSION = "0.1.0~probe3.6"
 ARCH = "iphoneos-arm64e"
 TWEAK = "Library/MobileSubstrate/DynamicLibraries/Pandora.dylib"
 FILTER = "Library/MobileSubstrate/DynamicLibraries/Pandora.plist"
