@@ -26,6 +26,8 @@ class DockMotionWiring(unittest.TestCase):
         self.assertIn('accessibilityCustomActions', setup)
         self.assertIn('addGestureRecognizer(pan)', EDGE)
         self.assertIn('minimumNumberOfTouches = 1', EDGE)
+        self.assertIn('override func gestureRecognizerShouldBegin', EDGE)
+        self.assertNotIn('pan.delegate = self', EDGE)
         self.assertNotIn('addGestureRecognizer', UI)
         self.assertNotIn('rotationButton', UI)
 

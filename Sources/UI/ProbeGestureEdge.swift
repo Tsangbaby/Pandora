@@ -2,7 +2,7 @@ import UIKit
 
 // This view is never installed on the native app, the hosted view, or the root.
 // Only the plug-in's own header and small parked card edge can start a pan.
-final class ProbeGestureEdge: UIView, UIGestureRecognizerDelegate {
+final class ProbeGestureEdge: UIView {
     let isDockTab: Bool
     var permitsGesture: (() -> Bool)?
     var onSwipe: ((WorkspaceEdgeMotion.Direction) -> Bool)?
@@ -27,7 +27,6 @@ final class ProbeGestureEdge: UIView, UIGestureRecognizerDelegate {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
         pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 1
-        pan.delegate = self
         addGestureRecognizer(pan)
         isAccessibilityElement = true
         accessibilityTraits = dockTab ? .button : .staticText
@@ -45,8 +44,9 @@ final class ProbeGestureEdge: UIView, UIGestureRecognizerDelegate {
                             width: 30, height: 3)
     }
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard super.gestureRecognizerShouldBegin(gestureRecognizer),
+              let pan = gestureRecognizer as? UIPanGestureRecognizer,
               !isHidden, window != nil, permitsGesture?() == true else { return false }
         let speed = pan.velocity(in: self)
         return speed.y.isFinite && speed.x.isFinite && abs(speed.y) > 1.2 * abs(speed.x) &&
