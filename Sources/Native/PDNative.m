@@ -407,6 +407,16 @@ static PDOverlayLease *PDPendingOverlay;
         self.boundManager == snapshot[@"manager"] && self.boundOwner == snapshot[@"owner"] &&
         self.boundNativePresenter == snapshot[@"native"] && self.boundContainer == snapshot[@"container"];
 }
+- (BOOL)nativeReturnConfirmed {
+    if (!NSThread.isMainThread) return NO;
+    @try {
+        if (!self.valid) return NO;
+        // The ordinary snapshot requires one prioritized original presenter,
+        // no inactive presenters, and its complete container back on its view.
+        NSDictionary *snapshot = PDNativeSnapshot(self.target, NULL);
+        return snapshot != nil && [self matchesSnapshot:snapshot];
+    } @catch (__unused NSException *exception) { return NO; }
+}
 - (BOOL)finishWithError:(NSError **)error {
     if (!NSThread.isMainThread) return PDError(error,@"清理必须在主线程。");
     if (self.invalidated) return YES;

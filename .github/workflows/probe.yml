@@ -3,7 +3,7 @@ name: Pandora RootHide probe
 on:
   push:
     branches:
-      - fix/0.1.0-probe3.4-ab-workgroup-core
+      - fix/0.1.0-probe3.5-serial-rotation
   workflow_dispatch:
 
 permissions:
@@ -39,9 +39,12 @@ jobs:
           baseline_rc=$?
           python3 Tests/test_workspace_source.py > ci-artifacts/workspace-source.log 2>&1
           workspace_source_rc=$?
-          cat ci-artifacts/python-tests.log ci-artifacts/native-source-candidate.log ci-artifacts/native-source-baseline.log ci-artifacts/workspace-source.log
+          python3 Tests/test_rotation_source.py > ci-artifacts/rotation-source.log 2>&1
+          rotation_source_rc=$?
+          cat ci-artifacts/python-tests.log ci-artifacts/native-source-candidate.log ci-artifacts/native-source-baseline.log ci-artifacts/workspace-source.log ci-artifacts/rotation-source.log
           if [ "$verify_rc" -ne 0 ] || [ "$manifest_rc" -ne 0 ] || [ "$source_rc" -ne 0 ] || \
-             [ "$source_fetch_rc" -ne 0 ] || [ "$baseline_rc" -ne 0 ] || [ "$workspace_source_rc" -ne 0 ]; then exit 1; fi
+             [ "$source_fetch_rc" -ne 0 ] || [ "$baseline_rc" -ne 0 ] || [ "$workspace_source_rc" -ne 0 ] || \
+             [ "$rotation_source_rc" -ne 0 ]; then exit 1; fi
 
       - name: Execute keyboard wiring and working-parent counterexamples
         run: |
@@ -80,7 +83,7 @@ jobs:
           debug_test=0
           release_build=0
           release_test=0
-          swiftc -sdk "$mac_sdk" -swift-version 5 -Onone Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Sources/Core/WorkspaceState.swift Tests/workspace.swift Tests/keyboard.swift Tests/main.swift \
+          swiftc -sdk "$mac_sdk" -swift-version 5 -Onone Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Sources/Core/WorkspaceState.swift Sources/Core/WorkspaceRotation.swift Tests/workspace.swift Tests/rotation.swift Tests/keyboard.swift Tests/main.swift \
             -o "$RUNNER_TEMP/pandora-probe-debug" > ci-artifacts/swift-debug-build.log 2>&1
           debug_build=$?
           cat ci-artifacts/swift-debug-build.log
@@ -89,7 +92,7 @@ jobs:
             debug_test=$?
             cat ci-artifacts/swift-debug-test.log
           fi
-          swiftc -sdk "$mac_sdk" -swift-version 5 -O Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Sources/Core/WorkspaceState.swift Tests/workspace.swift Tests/keyboard.swift Tests/main.swift \
+          swiftc -sdk "$mac_sdk" -swift-version 5 -O Sources/Core/ProbeState.swift Sources/Core/ProbeKeyboard.swift Sources/Core/WorkspaceState.swift Sources/Core/WorkspaceRotation.swift Tests/workspace.swift Tests/rotation.swift Tests/keyboard.swift Tests/main.swift \
             -o "$RUNNER_TEMP/pandora-probe-release" > ci-artifacts/swift-release-build.log 2>&1
           release_build=$?
           cat ci-artifacts/swift-release-build.log

@@ -30,6 +30,8 @@ BOOL PDProbeCanPresent(PDProbeTarget target);
 + (BOOL)finishPendingWithError:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(finishPending());
 @property (nonatomic, readonly) BOOL valid;
 @property (nonatomic, readonly) BOOL allowsDeferredFinish;
+// While this panel is still bound and the old hosted session has been released.
+@property (nonatomic, readonly) BOOL nativeReturnConfirmed;
 + (nullable instancetype)attachController:(UIViewController *)controller
                                   target:(PDProbeTarget)target
                           onInvalidation:(dispatch_block_t)handler

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile the exact FINAL PDOverlayLease section + Foundation doubles on macOS.
 
---check-source checks extraction bytes/hashes, declarations and 46 CHECK sites;
+--check-source checks extraction bytes/hashes, declarations and 51 CHECK sites;
 it does NOT compile Objective-C or execute native assertions. Every invocation
 writes overlay-lease-{report.json,build.log,test.log} under ci-artifacts (override
 with --artifacts-dir / CI_ARTIFACTS_DIR). No UIKit, real window, or device testing.
@@ -26,7 +26,7 @@ FILES = {
     'fixture': ROOT / 'Tests/overlay_lease.m',
     'driver': Path(__file__).resolve(),
 }
-EXPECTED_CHECKS = 46
+EXPECTED_CHECKS = 51
 EXPECTED_GROUPS = 9
 INCLUDE = 'overlay-lease-under-test.inc'
 SUMMARY = r'^PANDORA_OVERLAY_LEASE_TESTS checks=(\d+) failures=(\d+)$'

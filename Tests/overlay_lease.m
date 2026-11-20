@@ -216,6 +216,7 @@ typedef NS_ENUM(NSInteger, PDProbeTarget) {
 + (BOOL)finishPendingWithError:(NSError **)error;
 @property (nonatomic, readonly) BOOL valid;
 @property (nonatomic, readonly) BOOL allowsDeferredFinish;
+@property (nonatomic, readonly) BOOL nativeReturnConfirmed;
 + (instancetype)attachController:(UIViewController *)controller target:(PDProbeTarget)target
                  onInvalidation:(dispatch_block_t)handler error:(NSError **)error;
 - (BOOL)finishWithError:(NSError **)error;
@@ -242,6 +243,8 @@ static BOOL PDError(NSError **error, NSString *message) {
     return NO;
 }
 static BOOL canPresent = YES;
+static BOOL nativeSnapshotReady = YES;
+static UIView *replacementContainer;
 static PDProbeTarget foregroundTarget;
 static NSObject *nativeScene;
 static NSString *nativeIdentifier;
@@ -251,12 +254,12 @@ static BOOL PDBoundSceneIsCurrent(PDProbeTarget target, NSString *identifier, id
 }
 static NSDictionary *PDNativeSnapshot(PDProbeTarget target, NSError **error) {
     snapshotReads++;
-    if (!PDBoundSceneIsCurrent(target, nativeIdentifier, nativeScene)) {
-        PDError(error, @"Target has no current scene"); return nil;
+    if (!nativeSnapshotReady || !PDBoundSceneIsCurrent(target, nativeIdentifier, nativeScene)) {
+        PDError(error, @"Target has no current native presentation"); return nil;
     }
     return @{ @"scene":nativeScene, @"identifier":nativeIdentifier,
               @"parent":nativeParent, @"root":nativeRoot, @"window":nativeWindow,
-              @"container":borrowedContainer, @"nativeView":borrowedChild.view,
+              @"container":replacementContainer ?: borrowedContainer, @"nativeView":borrowedChild.view,
               @"native":nativePresenter, @"manager":nativeManager, @"owner":nativeOwner };
 }
 
@@ -284,6 +287,7 @@ static void fresh(void) {
     if (![PDOverlayLease finishPendingWithError:&error] || (nativeWindow && !nativeUntouched()))
         [NSException raise:@"PDHarnessCleanup" format:@"prior cleanup/native invariant: %@", error];
     recordingEffects = NO; canPresent = YES; foregroundTarget = PDProbeTargetNotes;
+    nativeSnapshotReady = YES; replacementContainer = nil;
     nativeScene = [NSObject new]; nativeIdentifier = @"sceneID:overlay-fixture";
     snapshotReads = presenterCancels = 0; lastObserver = nil; duringObserverInit = nil;
     nativeWindow = [UIWindow new]; nativeWindow.borrowed = YES;
@@ -495,6 +499,17 @@ static void testSceneBinding(void) {
     NSDictionary *snapshot = PDNativeSnapshot(PDProbeTargetFiles, &error);
     CHECK(lease.valid && snapshot && !error && [lease matchesSnapshot:snapshot],
           "Files overlay matches its exact bound Scene and hierarchy");
+    NSUInteger reads = snapshotReads;
+    CHECK(lease.nativeReturnConfirmed && snapshotReads == reads + 1 && !presenterCancels && nativeUntouched(),
+          "native return is checked through one fresh snapshot without mutating ownership");
+    nativeSnapshotReady = NO;
+    CHECK(lease.valid && !lease.nativeReturnConfirmed,
+          "an otherwise valid panel cannot rotate while the original presenter is not confirmed back");
+    nativeSnapshotReady = YES;
+    replacementContainer = [UIView new];
+    CHECK(lease.valid && !lease.nativeReturnConfirmed,
+          "replacement container on the same scene is not confirmation of native return");
+    replacementContainer = nil;
 
     NSMutableDictionary *stale = [snapshot mutableCopy];
     stale[@"scene"] = [NSObject new];
@@ -511,11 +526,14 @@ static void testSceneBinding(void) {
           "the same scene and window cannot be re-bound to a different presentation manager");
 
     foregroundTarget = PDProbeTargetNotes;
+    CHECK(!lease.nativeReturnConfirmed, "another foreground App refuses native return evidence");
     CHECK(!lease.valid && ![lease matchesSnapshot:snapshot] && lease.allowsDeferredFinish && attachRefused(),
           "foreground target switch blocks match and reattach without preventing cleanup");
     error = nil;
     CHECK([PDOverlayLease finishPendingWithError:&error] && !error && cleaned(own),
           "stale binding can still retire only its own containment");
+    foregroundTarget = PDProbeTargetFiles;
+    CHECK(!lease.nativeReturnConfirmed, "retired panel cannot certify a later return even if the App is foreground again");
 }
 
 int main(void) { @autoreleasepool {

@@ -36,14 +36,27 @@ final class ProbeRootView: UIView {
     }
 }
 
+private extension WorkspaceRotation.Member {
+    var appName: String { self == .notes ? "备忘录" : "文件" }
+    var probeTarget: PDProbeTarget { self == .notes ? .notes : .files }
+}
+
+private extension PDProbeTarget {
+    var rotationMember: WorkspaceRotation.Member { self == .files ? .files : .notes }
+}
+
 final class ProbeController: UIViewController {
     let target: PDProbeTarget
+    private(set) var rotationOffer: WorkspaceRotation.Ticket?
+    private var confirmingRotation = false
+    fileprivate var member: WorkspaceRotation.Member { target.rotationMember }
     private var isFiles: Bool { target == .files }
     private(set) var state = ProbeState()
     let panel = UIView()
     private let titleLabel = UILabel()
     private let status = UILabel()
     private let startButton = UIButton(type: .system)
+    private let rotationButton = UIButton(type: .system)
     private let focusButton = UIButton(type: .system)
     private let stopButton = UIButton(type: .system)
     private let closeButton = UIButton(type: .system)
@@ -55,8 +68,9 @@ final class ProbeController: UIViewController {
     private var appliedContentFrame: CGRect?
     private var updatingSessionLayout = false
 
-    init(target: PDProbeTarget) {
+    init(target: PDProbeTarget, rotationOffer: WorkspaceRotation.Ticket? = nil) {
         self.target = target
+        self.rotationOffer = rotationOffer
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -78,13 +92,19 @@ final class ProbeController: UIViewController {
         view.addSubview(panel)
         titleLabel.text = isFiles ? "Pandora · 文件单卡实验" : "Pandora · 单 Scene 实验"
         titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-        status.text = isFiles ? "手动挂载当前「文件」场景；只测画面、滚动、点击及归还。" :
-            "先打开备忘录，再手动挂载；不会自动切换 App。"
+        if let offer = rotationOffer {
+            status.text = "已交还\(offer.source.appName)。确认当前页面后，再点挂载\(member.appName)；不会自动接入。"
+        } else {
+            status.text = isFiles ? "手动挂载当前「文件」场景；只测画面、滚动、点击及归还。" :
+                "先打开备忘录，再手动挂载；不会自动切换 App。"
+        }
         status.font = .systemFont(ofSize: 12)
         status.numberOfLines = 3
         panel.addSubview(titleLabel)
         panel.addSubview(status)
         setup(startButton, isFiles ? "挂载文件" : "挂载备忘录", #selector(start))
+        setup(rotationButton, "轮换到\(member.partner.appName)", #selector(rotate))
+        rotationButton.accessibilityHint = "先归还当前场景，再手动打开另一个 App"
         setup(focusButton, "请求输入", #selector(focus))
         focusButton.isHidden = isFiles
         setup(stopButton, "结束实验", #selector(stop))
@@ -130,6 +150,11 @@ final class ProbeController: UIViewController {
             })
             session = candidate // Keep cleanup handle before layout/activation.
             try layoutSession(candidate)
+            guard state.generation == token, state.phase == .mounting,
+                  PDProbeRuntime.interactiveOverlay(for: self) === overlay else {
+                _ = end("挂载已取消，没有激活新的卡片。")
+                return
+            }
             try candidate.activate()
             guard state.attach(token) else {
                 _ = end("准备已取消，未提交界面状态。")
@@ -138,6 +163,11 @@ final class ProbeController: UIViewController {
             // Reconcile live outside-keyboard evidence after the native owner
             // has transferred ALL hosted layers, never before acquisition.
             try layoutSession(candidate)
+            guard PDProbeRuntime.recordMount(for: self, generation: token) else {
+                _ = end("挂载资格已取消，已撤销本次接入。")
+                return
+            }
+            rotationOffer = nil
             card.isHidden = false
             view.backgroundColor = .black
             status.text = isFiles ? "文件场景已挂载；请验证滚动、点击与结束后的原生操作。" :
@@ -150,7 +180,8 @@ final class ProbeController: UIViewController {
 
     @objc private func focus() {
         defer { PDProbeRuntime.resumeAfterNativeOperation(self) }
-        guard !isFiles, PDProbeRuntime.permitsInteraction(self), (view as? ProbeRootView)?.identityLost == false,
+        guard !isFiles, !confirmingRotation, PDProbeRuntime.permitsInteraction(self),
+              (view as? ProbeRootView)?.identityLost == false,
               state.phase == .attached, !state.focusRequested, let session = session else { return }
         do {
             try layoutSession(session) // Fresh positive occlusion check before requesting input.
@@ -161,12 +192,38 @@ final class ProbeController: UIViewController {
         refreshButtons()
     }
 
-    @objc private func stop() { end("已移除实验宿主；请检查原生界面和输入是否正常。") }
+    @objc private func rotate() {
+        guard canRotate, PDProbeRuntime.permitsInteraction(self) else { return }
+        if !confirmingRotation {
+            confirmingRotation = true
+            status.text = "先完成编辑并收起键盘，再点「确认交还」。随后在 30 秒内手动打开\(member.partner.appName)。"
+            refreshButtons()
+            return
+        }
+        PDProbeRuntime.rotate(from: self)
+    }
+
+    fileprivate var canRotate: Bool {
+        state.phase == .attached && !updatingSessionLayout &&
+            (viewIfLoaded as? ProbeRootView)?.identityLost == false && session?.remainsForeground == true
+    }
+
+    @objc private func stop() {
+        if confirmingRotation {
+            confirmingRotation = false
+            status.text = "已取消轮换，当前卡片仍可操作。"
+            refreshButtons()
+            return
+        }
+        end("已移除实验宿主；请检查原生界面和输入是否正常。")
+    }
     @objc private func close() { PDProbeRuntime.stopControls() }
 
     @discardableResult
     func end(_ message: String) -> Bool {
         guard let token = state.beginCancellation() else { return false }
+        confirmingRotation = false
+        PDProbeRuntime.discardMountOffer(for: self)
         var succeeded = false
         do {
             try session?.finish()
@@ -202,8 +259,14 @@ final class ProbeController: UIViewController {
 
     private func refreshButtons() {
         let permitted = PDProbeRuntime.permitsInteraction(self)
-        startButton.isEnabled = permitted && state.phase == .idle
-        focusButton.isEnabled = !isFiles && permitted && state.phase == .attached && !state.focusRequested
+        let mounted = state.phase == .attached
+        startButton.isHidden = mounted
+        startButton.isEnabled = permitted && state.phase == .idle && PDProbeRuntime.canMount(self)
+        rotationButton.isHidden = !mounted
+        rotationButton.isEnabled = permitted && mounted && rotationOffer == nil
+        rotationButton.setTitle(confirmingRotation ? "确认交还" : "轮换到\(member.partner.appName)", for: .normal)
+        focusButton.isEnabled = !isFiles && permitted && mounted && !state.focusRequested && !confirmingRotation
+        stopButton.setTitle(confirmingRotation ? "取消轮换" : "结束实验", for: .normal)
         stopButton.isEnabled = state.phase != .idle
     }
 
@@ -233,6 +296,7 @@ final class ProbeController: UIViewController {
         for (index, button) in buttons.enumerated() {
             button.frame = CGRect(x: 8 + CGFloat(index) * cellWidth, y: 88, width: cellWidth, height: 40)
         }
+        rotationButton.frame = startButton.frame
     }
 
     private func layoutSession(_ session: PDSceneSession) throws {
@@ -297,27 +361,34 @@ final class PDProbeRuntime: NSObject {
     private var root: ProbeController?
     private var lease: PDOverlayLease?
     private var armed: (target: PDProbeTarget, deadline: TimeInterval)?
+    private var rotation = WorkspaceRotation()
     private weak var preparingRoot: ProbeController?
     private var closingRequested = false
+    private var retiringControls = false
 
     @objc static func showControls() { arm(.notes) }
     @objc static func showFilesControls() { arm(.files) }
 
     private static func arm(_ target: PDProbeTarget) {
         precondition(Thread.isMainThread)
-        guard shared.root == nil, shared.preparingRoot == nil else { return }
+        guard shared.root == nil, shared.preparingRoot == nil, !shared.retiringControls else { return }
+        shared.rotation.cancel() // A new, explicit standalone choice replaces a pending route.
         shared.armed = (target, ProcessInfo.processInfo.systemUptime + 30)
         foregroundChanged()
     }
 
-    private func presentControls(_ target: PDProbeTarget) {
+    private func presentControls(_ target: PDProbeTarget, offer: WorkspaceRotation.Ticket? = nil) {
         armed = nil
-        let candidate = ProbeController(target: target)
+        guard rotation.permitsMount(target.rotationMember, offer: offer) else { return }
+        let candidate = ProbeController(target: target, rotationOffer: offer)
         preparingRoot = candidate
         closingRequested = false
         defer {
             preparingRoot = nil
-            if root == nil { closingRequested = false }
+            if root == nil {
+                if let offer { rotation.discardOffer(offer) }
+                closingRequested = false
+            }
         }
         do {
             try PDOverlayLease.finishPending()
@@ -327,7 +398,11 @@ final class PDProbeRuntime: NSObject {
                       PDProbeRuntime.shared.preparingRoot === candidate else { return }
                 PDProbeRuntime.stopControls()
             })
-            guard !closingRequested, lease.valid else { try lease.finish(); return }
+            guard !closingRequested, lease.valid, !closingRequested,
+                  rotation.permitsMount(target.rotationMember, offer: offer) else {
+                try lease.finish()
+                return
+            }
             self.root = candidate
             self.lease = lease
             candidate.refreshEnvironment()
@@ -339,32 +414,75 @@ final class PDProbeRuntime: NSObject {
     @objc static func stopControls() {
         precondition(Thread.isMainThread)
         let runtime = shared
-        let root = runtime.root
-        let lease = runtime.lease
         runtime.armed = nil
-        runtime.closingRequested = true
-        // During attachment, the pending lease cannot finish reentrantly. The
-        // publication guard retires it when the native call unwinds.
-        if root == nil && runtime.preparingRoot != nil { return }
-        guard root?.end("实验已结束；请检查原生画面、滚动和输入是否恢复。") ?? true else { return }
+        runtime.rotation.cancel()
+        _ = runtime.retireControls("实验已结束；请检查原生画面、滚动和输入是否恢复。")
+    }
+
+    static func rotate(from root: ProbeController) {
+        precondition(Thread.isMainThread)
+        let runtime = shared
+        guard root.canRotate, permitsInteraction(root),
+              let ticket = runtime.rotation.beginReturn(from: root.member) else { return }
+        runtime.armed = nil
+        let retired = runtime.retireControls("已移除实验宿主，正在核对原生归还。", verifyNativeReturn: true)
+        let verified = retired && PDProbeCanPresent(root.target)
+        if runtime.rotation.finishReturn(ticket, verified: verified, now: ProcessInfo.processInfo.systemUptime) {
+            UIAccessibility.post(notification: .announcement,
+                                 argument: "已交还\(ticket.source.appName)，请在三十秒内手动打开\(ticket.destination.appName)。")
+        }
+    }
+
+    @discardableResult
+    private func retireControls(_ message: String, verifyNativeReturn: Bool = false) -> Bool {
+        closingRequested = true
+        // No nested retirement, and no cleanup while native containment is still preparing.
+        guard !retiringControls, preparingRoot == nil else { return false }
+        retiringControls = true
+        defer { retiringControls = false }
+        let root = self.root
+        let lease = self.lease
+        guard root?.end(message) ?? true else { return false }
+        if verifyNativeReturn, lease?.nativeReturnConfirmed != true {
+            root?.blockOverlayCleanup("未能确认原生归还，未安排轮换。请关闭面板后检查当前 App。")
+            return false
+        }
         do {
             try lease?.finish()
             try PDOverlayLease.finishPending()
-            runtime.root = nil
-            runtime.lease = nil
-            runtime.closingRequested = false
+            self.root = nil
+            self.lease = nil
+            closingRequested = false
+            return true
         } catch {
             root?.blockOverlayCleanup("控制层清理未确认：\(error.localizedDescription)")
+            return false
         }
     }
 
     static func permitsInteraction(_ root: ProbeController) -> Bool {
-        return ProbeAdmission.permits(published: shared.root === root, closing: shared.closingRequested,
-                                      overlayValid: shared.lease?.valid == true)
+        let runtime = shared
+        guard runtime.root === root, !runtime.closingRequested, !runtime.retiringControls else { return false }
+        let valid = runtime.lease?.valid == true
+        return ProbeAdmission.permits(published: runtime.root === root, closing: runtime.closingRequested,
+                                      overlayValid: valid)
+    }
+
+    static func canMount(_ root: ProbeController) -> Bool {
+        return shared.rotation.permitsMount(root.member, offer: root.rotationOffer)
     }
 
     static func interactiveOverlay(for root: ProbeController) -> PDOverlayLease? {
-        return permitsInteraction(root) ? shared.lease : nil
+        return permitsInteraction(root) && canMount(root) ? shared.lease : nil
+    }
+
+    static func recordMount(for root: ProbeController, generation: UInt64) -> Bool {
+        guard permitsInteraction(root), root.state.phase == .attached, root.state.generation == generation else { return false }
+        return shared.rotation.recordMount(root.member, offer: root.rotationOffer)
+    }
+
+    static func discardMountOffer(for root: ProbeController) {
+        if shared.root === root, let offer = root.rotationOffer { shared.rotation.discardOffer(offer) }
     }
 
     static func isClosing(_ root: ProbeController) -> Bool {
@@ -384,7 +502,8 @@ final class PDProbeRuntime: NSObject {
 
     static func rootDetached(_ root: ProbeController) {
         DispatchQueue.main.async { [weak root] in
-            guard let root = root, shared.root === root else { return }
+            // Intentional removal during our own retirement isn't a new cancel.
+            guard let root = root, shared.root === root, !shared.retiringControls else { return }
             stopControls()
         }
     }
@@ -392,11 +511,22 @@ final class PDProbeRuntime: NSObject {
     @objc static func foregroundChanged() {
         precondition(Thread.isMainThread)
         let runtime = shared
+        guard !runtime.retiringControls else { return }
         if let root = runtime.root {
             if runtime.lease?.valid == true { root.foregroundChanged() }
             else { stopControls() }
         } else if let preparing = runtime.preparingRoot {
-            if !PDProbeCanPresent(preparing.target) { runtime.closingRequested = true }
+            if !PDProbeCanPresent(preparing.target) {
+                runtime.closingRequested = true
+                runtime.rotation.cancel()
+            }
+        } else if let destination = runtime.rotation.waitingFor {
+            let foreground = PDProbeCanPresent(destination.probeTarget) ? destination : nil
+            if let offer = runtime.rotation.offer(whenForeground: foreground, now: ProcessInfo.processInfo.systemUptime) {
+                // This attaches only the bound controls. No presenter is created
+                // until the receiving App's explicit mount action.
+                runtime.presentControls(destination.probeTarget, offer: offer)
+            }
         } else if let armed = runtime.armed {
             if ProcessInfo.processInfo.systemUptime >= armed.deadline { runtime.armed = nil }
             else if PDProbeCanPresent(armed.target) { runtime.presentControls(armed.target) }
